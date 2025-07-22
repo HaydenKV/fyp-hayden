@@ -1,0 +1,47 @@
+<launch>
+    <!-- Set initial robot pose -->
+    <arg name="x" default="-4.3"/>
+    <arg name="y" default="3"/>
+    <arg name="z" default="0"/>
+    <arg name="roll" default="0"/>
+    <arg name="pitch" default="0"/>
+    <arg name="yaw" default="-3.14"/>
+
+    <!-- URDF and plugin params -->
+    <param name="robot_description" command="$(find xacro)/xacro $(find qcar_gazebo)/urdf/qcar_model.xacro" />
+    <rosparam file="$(find qcar_controlplugin)/config/qcar_controlplugin.yaml" command="load"/>
+
+    <!-- Robot state -->
+    <node name="joint_state_publisher" pkg="joint_state_publisher" type="joint_state_publisher"/>
+    <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher"
+          output="screen">
+        <remap from="/joint_states" to="/qcar/joint_states" />
+    </node>
+
+    <!-- Launch Track 1 world -->
+    <include file="$(find gazebo_ros)/launch/empty_world.launch">
+        <arg name="world_name" value="$(find qcar_gazebo)/worlds/Track1.world"/>
+        <arg name="gui" value="true"/>
+        <arg name="verbose" value="true"/>
+    </include>
+
+    <!-- Spawn QCar -->
+    <node name="spawn_qcar" pkg="gazebo_ros" type="spawn_model" output="screen"
+          args="-urdf -param robot_description -model qcar
+                -x $(arg x) -y $(arg y) -z $(arg z)
+                -R $(arg roll) -P $(arg pitch) -Y $(arg yaw)"/>
+
+    <!-- Controllers -->
+    <node name="controller_spawner" pkg="controller_manager" type="spawner" output="screen"
+          ns="/qcar" args="base_fr_controller base_fl_controller joint_state_controller"/>
+
+    <!-- Guidance -->
+    <node name="guidance_node" pkg="qcar_guidance" type="example_guidance_node.py" output="screen"/>
+
+    <!-- Control -->
+    <node name="control_node" pkg="qcar_control" type="example_control_node" output="screen"/>
+
+    <!-- LiDAR mapper-->
+    <node name="lidar_map_node" pkg="qcar_visnav" type="lidar_map.py" output="screen"/>
+</launch>
+
