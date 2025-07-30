@@ -120,6 +120,13 @@ include_directories(
 # include
   ${catkin_INCLUDE_DIRS}
 )
+## Declare accelerometer node
+add_executable(accel_node src/sensors/accel_node.cpp)
+target_link_libraries(accel_node ${catkin_LIBRARIES})
+
+## Declare accelerometer debug printer
+add_executable(accel_debug_printer src/sensors/accel_debug_printer.cpp)
+target_link_libraries(accel_debug_printer ${catkin_LIBRARIES})
 
 ## Declare a C++ library
 # add_library(${PROJECT_NAME}

@@ -1,0 +1,46 @@
+<launch>
+    <!-- Base Track 1 launch setup -->
+    <arg name="x" default="-4.3"/>
+    <arg name="y" default="3"/>
+    <arg name="z" default="0"/>
+    <arg name="roll" default="0"/>
+    <arg name="pitch" default="0"/>
+    <arg name="yaw" default="-3.14"/>
+
+    <!-- URDF and plugin parameters -->
+    <param name="robot_description" command="$(find xacro)/xacro $(find qcar_gazebo)/urdf/qcar_model.xacro" />
+    <rosparam file="$(find qcar_controlplugin)/config/qcar_controlplugin.yaml" command="load"/>
+
+    <!-- Robot state publishers -->
+    <node name="joint_state_publisher" pkg="joint_state_publisher" type="joint_state_publisher"/>
+    <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" output="screen">
+        <remap from="/joint_states" to="/qcar/joint_states" />
+    </node>
+
+    <!-- Launch the world -->
+    <include file="$(find gazebo_ros)/launch/empty_world.launch">
+        <arg name="world_name" value="$(find qcar_gazebo)/worlds/Track1.world"/>
+        <arg name="gui" value="true"/>
+        <arg name="verbose" value="true"/>
+    </include>
+
+    <!-- Spawn the QCar into the world -->
+    <node name="spawn_qcar" pkg="gazebo_ros" type="spawn_model" output="screen"
+          args="-urdf -param robot_description -model qcar
+                -x $(arg x) -y $(arg y) -z $(arg z)
+                -R $(arg roll) -P $(arg pitch) -Y $(arg yaw)"/>
+
+    <!-- Controllers -->
+    <node name="controller_spawner" pkg="controller_manager" type="spawner" output="screen"
+          ns="/qcar" args="base_fr_controller base_fl_controller joint_state_controller"/>
+
+    <!-- Guidance and Control -->
+    <node name="guidance_node" pkg="qcar_guidance" type="example_guidance_node.py" output="screen"/>
+    <node name="control_node" pkg="qcar_control" type="example_control_node" output="screen"/>
+
+    <!-- EKF Accel Sensor Node -->
+    <node name="accel_node" pkg="qcar_visnav" type="accel_node" output="screen"/>
+
+    <!-- Debug Print Node (prints z, h(x), residual y) -->
+    <node name="accel_debug_printer" pkg="qcar_visnav" type="accel_debug_printer" output="screen"/>
+</launch>
