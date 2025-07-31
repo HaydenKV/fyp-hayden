@@ -35,8 +35,8 @@
           ns="/qcar" args="base_fr_controller base_fl_controller joint_state_controller"/>
 
     <!-- Guidance and Control -->
-    <node name="guidance_node" pkg="qcar_guidance" type="example_guidance_node.py" output="screen"/>
-    <node name="control_node" pkg="qcar_control" type="example_control_node" output="screen"/>
+    <node name="guidance_node" pkg="qcar_guidance" type="example_guidance_node.py" output="log"/>
+    <node name="control_node" pkg="qcar_control" type="example_control_node" output="log"/>
 
     <!-- EKF Accel Sensor Node -->
     <node name="accel_node" pkg="qcar_visnav" type="accel_node" output="screen"/>

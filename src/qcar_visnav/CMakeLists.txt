@@ -12,11 +12,13 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   sensor_msgs
   std_msgs
+  geometry_msgs
+  message_generation
 )
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
-
+find_package(Eigen3 REQUIRED NO_MODULE)
 
 ## Uncomment this if the package has a setup.py. This macro ensures
 ## modules and global scripts declared therein get installed
@@ -54,6 +56,12 @@ find_package(catkin REQUIRED COMPONENTS
 #   Message2.msg
 # )
 
+add_message_files(
+  FILES
+  AccelerometerMeasurement.msg
+  # ... your other messages
+)
+
 ## Generate services in the 'srv' folder
 # add_service_files(
 #   FILES
@@ -69,10 +77,12 @@ find_package(catkin REQUIRED COMPONENTS
 # )
 
 ## Generate added messages and services with any dependencies listed here
-# generate_messages(
-#   DEPENDENCIES
-#   sensor_msgs#   std_msgs
-# )
+generate_messages(
+  DEPENDENCIES
+  sensor_msgs
+  std_msgs
+  geometry_msgs
+)
 
 ################################################
 ## Declare ROS dynamic reconfigure parameters ##
@@ -104,9 +114,9 @@ find_package(catkin REQUIRED COMPONENTS
 ## CATKIN_DEPENDS: catkin_packages dependent projects also need
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
-#  INCLUDE_DIRS include
-#  LIBRARIES qcar_visnav
-#  CATKIN_DEPENDS roscpp rospy sensor_msgs std_msgs
+  INCLUDE_DIRS include
+  LIBRARIES qcar_visnav
+  CATKIN_DEPENDS roscpp rospy sensor_msgs std_msgs geometry_msgs message_runtime
 #  DEPENDS system_lib
 )
 
@@ -117,21 +127,23 @@ catkin_package(
 ## Specify additional locations of header files
 ## Your package locations should be listed before other locations
 include_directories(
-# include
+  include
   ${catkin_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIR}
 )
-## Declare accelerometer node
-add_executable(accel_node src/sensors/accel_node.cpp)
-target_link_libraries(accel_node ${catkin_LIBRARIES})
-
-## Declare accelerometer debug printer
-add_executable(accel_debug_printer src/sensors/accel_debug_printer.cpp)
-target_link_libraries(accel_debug_printer ${catkin_LIBRARIES})
 
 ## Declare a C++ library
 # add_library(${PROJECT_NAME}
 #   src/${PROJECT_NAME}/qcar_visnav.cpp
 # )
+
+add_library(${PROJECT_NAME}_measurement
+  src/measurement/imu_processor.cpp
+)
+target_link_libraries(${PROJECT_NAME}_measurement
+  ${catkin_LIBRARIES}
+)
+
 
 ## Add cmake target dependencies of the library
 ## as an example, code may need to be generated before libraries
@@ -143,6 +155,17 @@ target_link_libraries(accel_debug_printer ${catkin_LIBRARIES})
 ## The recommended prefix ensures that target names across packages don't collide
 # add_executable(${PROJECT_NAME}_node src/qcar_visnav_node.cpp)
 
+# Add executable
+add_executable(imu_processing_node 
+  src/nodes/imu_node.cpp
+  src/nodes/imu_main.cpp
+)
+
+target_link_libraries(imu_processing_node
+  ${PROJECT_NAME}_measurement
+  ${catkin_LIBRARIES}
+)
+
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
 ## target back to the shorter version for ease of user use
@@ -152,6 +175,11 @@ target_link_libraries(accel_debug_printer ${catkin_LIBRARIES})
 ## Add cmake target dependencies of the executable
 ## same as for the library above
 # add_dependencies(${PROJECT_NAME}_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+
+add_dependencies(imu_processing_node 
+  ${${PROJECT_NAME}_EXPORTED_TARGETS} 
+  ${catkin_EXPORTED_TARGETS}
+)
 
 ## Specify libraries to link a library or executable target against
 # target_link_libraries(${PROJECT_NAME}_node
