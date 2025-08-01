@@ -6,13 +6,13 @@
 
 namespace qcar_visnav {
 
-struct AccelerometerMeasurementData {
+struct AccelData {  // Renamed to avoid conflict with ROS message
     ros::Time timestamp;
     Eigen::Vector3d acceleration;
     double measurement_variance;
     bool is_valid;
     
-    AccelerometerMeasurementData() : 
+    AccelData() : 
         acceleration(Eigen::Vector3d::Zero()),
         measurement_variance(0.01),
         is_valid(false) {}

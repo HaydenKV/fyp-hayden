@@ -15,8 +15,8 @@ AccelerometerProcessor::AccelerometerProcessor(const AccelerometerParameters& pa
     params_(params) {
 }
 
-AccelerometerMeasurementData AccelerometerProcessor::processMeasurement(const sensor_msgs::Imu::ConstPtr& imu_msg) {
-    AccelerometerMeasurementData measurement;
+AccelData AccelerometerProcessor::processMeasurement(const sensor_msgs::Imu::ConstPtr& imu_msg) {
+    AccelData measurement;  // Changed from AccelerometerMeasurement to AccelData
     measurement.timestamp = imu_msg->header.stamp;
     
     // Raw acceleration - no processing, just pass through

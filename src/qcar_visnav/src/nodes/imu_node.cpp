@@ -1,6 +1,3 @@
-// =====================================================================
-// FILE: src/nodes/imu_node.cpp
-// =====================================================================
 #include "qcar_visnav/nodes/imu_node.h"
 #include <ros/ros.h>
 
@@ -40,17 +37,17 @@ void AccelerometerNode::spin() {
 
 void AccelerometerNode::imuCallback(const sensor_msgs::Imu::ConstPtr& msg) {
     // Process the IMU message (minimal processing)
-    AccelerometerMeasurementData measurement = accel_processor_.processMeasurement(msg);
+    AccelData measurement = accel_processor_.processMeasurement(msg);  // Fixed: AccelData type
     
     // Convert to ROS message and publish
     qcar_visnav::AccelerometerMeasurement accel_msg;
     accel_msg.header = msg->header;
     accel_msg.header.frame_id = "base_link"; // Vehicle frame
     
-    // Fill in the data
-    accel_msg.acceleration.x = measurement.acceleration.x();
-    accel_msg.acceleration.y = measurement.acceleration.y();
-    accel_msg.acceleration.z = measurement.acceleration.z();
+    // Fill in the data - Fixed: proper Eigen access
+    accel_msg.acceleration.x = measurement.acceleration(0);  // Eigen access with ()
+    accel_msg.acceleration.y = measurement.acceleration(1);
+    accel_msg.acceleration.z = measurement.acceleration(2);
     accel_msg.measurement_variance = measurement.measurement_variance;
     accel_msg.is_valid = measurement.is_valid;
     

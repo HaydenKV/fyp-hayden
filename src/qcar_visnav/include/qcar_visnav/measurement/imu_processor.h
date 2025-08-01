@@ -13,7 +13,7 @@ public:
     AccelerometerProcessor();
     explicit AccelerometerProcessor(const AccelerometerParameters& params);
     
-    AccelerometerMeasurementData processMeasurement(const sensor_msgs::Imu::ConstPtr& imu_msg);
+    AccelData processMeasurement(const sensor_msgs::Imu::ConstPtr& imu_msg);  // Changed return type
     void setParameters(const AccelerometerParameters& params);
     AccelerometerParameters getParameters() const { return params_; }
     
