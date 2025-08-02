@@ -1,0 +1,39 @@
+<launch>
+    <!-- Estimator Only Launch - for testing EKF without full simulation -->
+    
+    <arg name="debug" default="true"/>
+    <arg name="bag_file" default=""/>
+    <arg name="use_bag" default="false"/>
+    
+    <!-- Load estimator parameters -->
+    <rosparam file="$(find qcar_visnav)/config/estimator_params.yaml" command="load"/>
+    
+    <!-- Enable debug mode -->
+    <param name="estimator_node/publish_debug" value="$(arg debug)"/>
+    <param name="estimator_node/verbosity" value="2"/>
+    
+    <!-- Main Estimator Node -->
+    <node name="estimator_node" pkg="qcar_visnav" type="estimator_node" output="screen">
+        <!-- Topic remapping for testing -->
+        <remap from="/qcar/imu" to="/imu/data"/>
+        <remap from="/qcar/ground_truth/odom" to="/odom"/>
+        <remap from="/qcar/lidar" to="/scan"/>
+    </node>
+    
+    <!-- Play bag file if specified -->
+    <group if="$(arg use_bag)">
+        <node name="bag_player" pkg="rosbag" type="play" args="$(arg bag_file) --clock" output="screen"/>
+        <param name="use_sim_time" value="true"/>
+    </group>
+    
+    <!-- Debug tools -->
+    <group if="$(arg debug)">
+        <!-- State monitor -->
+        <node name="state_monitor" pkg="qcar_visnav" type="state_monitor.py" output="screen"/>
+        
+        <!-- Plot tools -->
+        <node name="rqt_plot" pkg="rqt_plot" type="rqt_plot" 
+              args="/qcar_visnav/estimator_state/u /qcar_visnav/estimator_state/v /qcar_visnav/estimator_state/r" output="screen"/>
+    </group>
+    
+</launch>

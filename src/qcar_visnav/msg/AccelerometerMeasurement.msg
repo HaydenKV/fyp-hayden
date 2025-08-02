@@ -1,4 +1,12 @@
+# Accelerometer Measurement Message
 Header header
-geometry_msgs/Vector3 acceleration    # Raw acceleration from sensor
-float64 measurement_variance          # Noise variance for EKF
-bool is_valid                        # Basic validation flag
+
+# Raw acceleration measurement
+geometry_msgs/Vector3 acceleration
+
+# Measurement quality
+float64 measurement_variance
+bool is_valid
+
+# Sensor metadata
+string sensor_frame

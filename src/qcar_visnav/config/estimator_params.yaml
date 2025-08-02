@@ -1,0 +1,75 @@
+# Estimator Node Parameters - matches MATLAB SystemQCAR configuration
+
+estimator_node:
+  # Simulation parameters (from MATLAB runSim.m)
+  simulation_time: 60.0        # Total simulation time (seconds)
+  run_estimator: true          # Enable state estimation
+  publish_debug: true          # Enable debug publishing
+  verbosity: 1                 # Debug verbosity level (0-2)
+  
+  # Event timing (from MATLAB runSim.m)
+  event_rates:
+    imu_rate: 50.0            # Hz - dt_imu = 1/50
+    odometry_rate: 50.0       # Hz - dt_enc = dt_imu  
+    lidar_rate: 10.0          # Hz - dt_lidar = 1/10
+    control_rate: 50.0        # Hz - dt_ctrl = 1/50
+    
+  # EKF parameters
+  ekf:
+    # Initial state [u, v, r, wF, wR, delta, N, E, psi, gyro]
+    initial_state: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    
+    # Initial covariance diagonal (from MATLAB SystemQCAR.m P0)
+    initial_covariance: [1e-2, 1e-2, 1e-1, 5e-2, 5e-2, 1e-3, 1e-2, 1e-2, 5e-2, 1e1]
+    
+    # Process noise parameters
+    process_noise:
+      velocity: 0.01          # Velocity process noise std (m/s)
+      angular: 0.01           # Angular velocity noise std (rad/s)
+      position: 0.001         # Position process noise std (m)
+      heading: 0.001          # Heading process noise std (rad)
+    
+    # Update methods (from MATLAB)
+    measurement_update_method: "NewtonTrustEig"    # For IMU, Odometry
+    lidar_update_method: "BFGSTrustSqrtInv"        # For LiDAR
+    
+  # Sensor parameters
+  sensors:
+    # Accelerometer (from MATLAB MeasurementAccelerometer.m)
+    accelerometer:
+      # Mounting position and orientation  
+      rMBb: [0.1278, 0.0223, 0.0895]  # Position w.r.t body frame
+      Rbm: [[1, 0, 0], [0, 1, 0], [0, 0, 1]]  # Orientation matrix
+      
+      # Noise model (from MATLAB noiseDensity.m)
+      noise_std_dev: 0.1            # Standard deviation (m/s²)
+      max_acceleration: 50.0         # Validation limit (m/s²)
+      
+    # Odometry/Encoder
+    odometry:
+      position_noise_std: 0.01      # Position noise (m)
+      velocity_noise_std: 0.1       # Velocity noise (m/s)
+      heading_noise_std: 0.01       # Heading noise (rad)
+      max_velocity: 30.0            # Maximum velocity (m/s)
+      
+    # LiDAR
+    lidar:
+      range_noise_std: 0.05         # Range measurement noise (m)
+      max_range: 30.0               # Maximum detection range (m)
+      min_range: 0.1                # Minimum detection range (m)
+      
+  # System physics parameters
+  system:
+    gravity: 9.81                   # Gravity constant (m/s²)
+    
+    # Vehicle parameters (would need full QCAR parameters from MATLAB)
+    mass: 1.5                       # Vehicle mass (kg)
+    wheelbase: 0.3                  # Wheelbase (m)
+    
+  # Publishing parameters
+  publishing:
+    state_topic: "/qcar_visnav/estimator_state"
+    odom_topic: "/qcar_visnav/ekf_odom"
+    debug_topic: "/qcar_visnav/event_debug"
+    base_frame: "base_link"
+    odom_frame: "odom"

@@ -1,0 +1,36 @@
+# Occupancy Mapping Node Parameters
+
+mapping_node:
+  # Map parameters
+  map:
+    resolution: 0.05              # Map resolution (m/cell)
+    width: 100.0                  # Map width (m)
+    height: 100.0                 # Map height (m)
+    origin_x: -50.0               # Map origin x (m)
+    origin_y: -50.0               # Map origin y (m)
+    
+  # LiDAR processing
+  lidar:
+    max_range: 30.0               # Maximum LiDAR range (m)
+    min_range: 0.1                # Minimum LiDAR range (m)
+    angle_min: -3.14159           # Minimum scan angle (rad)
+    angle_max: 3.14159            # Maximum scan angle (rad)
+    
+  # Occupancy grid parameters
+  occupancy:
+    free_threshold: 0.25          # Free space threshold
+    occupied_threshold: 0.65      # Occupied space threshold
+    update_rate: 5.0              # Map update rate (Hz)
+    
+  # Cone detection
+  cone_detection:
+    enable: true                  # Enable cone detection
+    min_points: 3                 # Minimum points for cone detection
+    max_distance: 0.5             # Maximum distance for point clustering (m)
+    cone_radius: 0.1              # Expected cone radius (m)
+    
+  # Publishing
+  publishing:
+    map_topic: "/qcar_visnav/occupancy_map"
+    cones_topic: "/qcar_visnav/detected_cones"
+    map_frame: "odom"

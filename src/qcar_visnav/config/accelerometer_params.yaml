@@ -1,7 +1,0 @@
-# Accelerometer Processing Parameters - Simplified for EKF
-accelerometer_processing_node:
-  # Noise characteristics for EKF
-  noise_std_dev: 0.1        # Accelerometer noise standard deviation (m/s²)
-  
-  # Validation limits
-  max_acceleration: 50.0    # Maximum reasonable acceleration including gravity (m/s²)

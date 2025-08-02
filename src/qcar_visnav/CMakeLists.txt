@@ -10,15 +10,20 @@ project(qcar_visnav)
 find_package(catkin REQUIRED COMPONENTS
   roscpp
   rospy
-  sensor_msgs
   std_msgs
+  sensor_msgs
+  nav_msgs
   geometry_msgs
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
   message_generation
+  eigen_conversions
 )
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
-find_package(Eigen3 REQUIRED NO_MODULE)
+find_package(Eigen3 REQUIRED)
 
 ## Uncomment this if the package has a setup.py. This macro ensures
 ## modules and global scripts declared therein get installed
@@ -56,10 +61,13 @@ find_package(Eigen3 REQUIRED NO_MODULE)
 #   Message2.msg
 # )
 
+# Add message files
 add_message_files(
   FILES
   AccelerometerMeasurement.msg
-  # ... your other messages
+  EstimatorState.msg
+  EventDebug.msg
+  SensorMeasurement.msg
 )
 
 ## Generate services in the 'srv' folder
@@ -79,9 +87,10 @@ add_message_files(
 ## Generate added messages and services with any dependencies listed here
 generate_messages(
   DEPENDENCIES
-  sensor_msgs
   std_msgs
   geometry_msgs
+  sensor_msgs
+  nav_msgs
 )
 
 ################################################
@@ -115,9 +124,9 @@ generate_messages(
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
   INCLUDE_DIRS include
-  LIBRARIES qcar_visnav
-  CATKIN_DEPENDS roscpp rospy sensor_msgs std_msgs geometry_msgs message_runtime
-#  DEPENDS system_lib
+#  LIBRARIES ${PROJECT_NAME}_core
+  CATKIN_DEPENDS roscpp rospy std_msgs sensor_msgs nav_msgs geometry_msgs message_runtime tf2 tf2_ros
+  DEPENDS EIGEN3
 )
 
 ###########
@@ -137,12 +146,23 @@ include_directories(
 #   src/${PROJECT_NAME}/qcar_visnav.cpp
 # )
 
-add_library(${PROJECT_NAME}_measurement
-  src/measurement/imu_processor.cpp
-)
-target_link_libraries(${PROJECT_NAME}_measurement
-  ${catkin_LIBRARIES}
-)
+# Core estimation library - COMMENTED OUT until source files are created
+# add_library(${PROJECT_NAME}_core
+#   # Math components
+#   src/math/accelerometer_prediction.cpp
+#   src/math/ekf_filter.cpp
+#   
+#   # Estimator components  
+#   src/estimator/event_queue.cpp
+#   src/estimator/measurement_events.cpp
+#   src/estimator/ekf_processor.cpp
+#   
+#   # Sensor processors
+#   src/sensors/accelerometer_processor.cpp
+#   src/sensors/odometry_processor.cpp
+# )
+# target_link_libraries(${PROJECT_NAME}_core ${catkin_LIBRARIES})
+# add_dependencies(${PROJECT_NAME}_core ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 
 ## Add cmake target dependencies of the library
@@ -155,16 +175,15 @@ target_link_libraries(${PROJECT_NAME}_measurement
 ## The recommended prefix ensures that target names across packages don't collide
 # add_executable(${PROJECT_NAME}_node src/qcar_visnav_node.cpp)
 
-# Add executable
-add_executable(imu_processing_node 
-  src/nodes/imu_node.cpp
-  src/nodes/imu_main.cpp
-)
-
-target_link_libraries(imu_processing_node
-  ${PROJECT_NAME}_measurement
-  ${catkin_LIBRARIES}
-)
+# Main Estimator Node - COMMENTED OUT until source files are created
+# add_executable(estimator_node 
+#   src/estimator/estimator_node.cpp
+#   src/nodes/estimator_main.cpp
+# )
+# target_link_libraries(estimator_node 
+#   ${PROJECT_NAME}_core
+#   ${catkin_LIBRARIES}
+# )
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
@@ -176,10 +195,23 @@ target_link_libraries(imu_processing_node
 ## same as for the library above
 # add_dependencies(${PROJECT_NAME}_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
-add_dependencies(imu_processing_node 
-  ${${PROJECT_NAME}_EXPORTED_TARGETS} 
-  ${catkin_EXPORTED_TARGETS}
-)
+# add_dependencies(estimator_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+
+# Mapping node (separate as per architecture) - COMMENTED OUT until source files are created
+# add_executable(mapping_node
+#   src/mapping/occupancy_mapping_node.cpp
+#   src/mapping/cone_detector.cpp
+#   src/nodes/mapping_main.cpp
+# )
+# target_link_libraries(mapping_node ${catkin_LIBRARIES})
+# add_dependencies(mapping_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+
+# Install targets - COMMENTED OUT until executables are created
+# install(TARGETS estimator_node mapping_node ${PROJECT_NAME}_core
+#   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+#   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+#   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+# )
 
 ## Specify libraries to link a library or executable target against
 # target_link_libraries(${PROJECT_NAME}_node
@@ -189,6 +221,19 @@ add_dependencies(imu_processing_node
 #############
 ## Install ##
 #############
+
+install(DIRECTORY include/${PROJECT_NAME}/
+  DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
+  FILES_MATCHING PATTERN "*.h"
+)
+
+install(DIRECTORY launch/
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch
+)
+
+install(DIRECTORY config/
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/config
+)
 
 # all install targets should use catkin DESTINATION variables
 # See http://ros.org/doc/api/catkin/html/adv_user_guide/variables.html
