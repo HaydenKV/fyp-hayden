@@ -1,5 +1,7 @@
 #include "qcar_visnav/estimator/measurement_events.h"
 #include "qcar_visnav/estimator/ekf_processor.h"
+#include <tf2/LinearMath/Quaternion.h>           // ADD THIS LINE
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h> // ADD THIS LINE
 
 namespace qcar_visnav {
 

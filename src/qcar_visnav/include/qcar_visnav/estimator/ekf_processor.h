@@ -2,28 +2,13 @@
 #define QCAR_VISNAV_EKF_PROCESSOR_H
 
 #include <ros/ros.h>
+#include <sensor_msgs/LaserScan.h>
 #include <Eigen/Dense>
 #include "qcar_visnav/math/system_params.h"
 #include "qcar_visnav/math/accelerometer_prediction.h"
 #include "qcar_visnav/math/ekf_filter.h"
 
 namespace qcar_visnav {
-
-// Measurement structures
-struct AccelerometerMeasurement {
-    Eigen::Vector3d acceleration;
-    ros::Time timestamp;
-    double variance;
-    bool is_valid;
-};
-
-struct OdometryMeasurement {
-    Eigen::Vector3d position;    // [N, E, 0]
-    Eigen::Vector3d velocity;    // [u, v, 0] 
-    double heading;              // psi
-    ros::Time timestamp;
-    bool is_valid;
-};
 
 // EKF Processing Engine - centralizes all estimation like MATLAB SystemQCAR
 class EKFProcessor {

@@ -37,6 +37,14 @@ struct SystemState {
     }
 };
 
+struct OdometryMeasurement {
+    Eigen::Vector3d position;    // [N, E, 0]
+    Eigen::Vector3d velocity;    // [u, v, 0] 
+    double heading;              // psi
+    ros::Time timestamp;
+    bool is_valid;
+};
+
 } // namespace qcar_visnav
 
 #endif // QCAR_VISNAV_SYSTEM_PARAMS_H

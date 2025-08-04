@@ -124,7 +124,7 @@ generate_messages(
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
   INCLUDE_DIRS include
-#  LIBRARIES ${PROJECT_NAME}_core
+  LIBRARIES ${PROJECT_NAME}_core
   CATKIN_DEPENDS roscpp rospy std_msgs sensor_msgs nav_msgs geometry_msgs message_runtime tf2 tf2_ros
   DEPENDS EIGEN3
 )
@@ -146,23 +146,23 @@ include_directories(
 #   src/${PROJECT_NAME}/qcar_visnav.cpp
 # )
 
-# Core estimation library - COMMENTED OUT until source files are created
-# add_library(${PROJECT_NAME}_core
-#   # Math components
-#   src/math/accelerometer_prediction.cpp
-#   src/math/ekf_filter.cpp
-#   
-#   # Estimator components  
-#   src/estimator/event_queue.cpp
-#   src/estimator/measurement_events.cpp
-#   src/estimator/ekf_processor.cpp
-#   
-#   # Sensor processors
-#   src/sensors/accelerometer_processor.cpp
-#   src/sensors/odometry_processor.cpp
-# )
-# target_link_libraries(${PROJECT_NAME}_core ${catkin_LIBRARIES})
-# add_dependencies(${PROJECT_NAME}_core ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+# Core estimation library - NOW UNCOMMENTED WITH ALL FILES
+add_library(${PROJECT_NAME}_core
+  # Math components
+  src/math/accelerometer_prediction.cpp
+  src/math/ekf_filter.cpp
+  
+  # Estimator components  
+  src/estimator/event_queue.cpp
+  src/estimator/measurement_events.cpp
+  src/estimator/ekf_processor.cpp
+  
+  # Sensor processors
+  src/sensors/accelerometer_processor.cpp
+  src/sensors/odometry_processor.cpp
+)
+target_link_libraries(${PROJECT_NAME}_core ${catkin_LIBRARIES})
+add_dependencies(${PROJECT_NAME}_core ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 
 ## Add cmake target dependencies of the library
@@ -175,15 +175,15 @@ include_directories(
 ## The recommended prefix ensures that target names across packages don't collide
 # add_executable(${PROJECT_NAME}_node src/qcar_visnav_node.cpp)
 
-# Main Estimator Node - COMMENTED OUT until source files are created
-# add_executable(estimator_node 
-#   src/estimator/estimator_node.cpp
-#   src/nodes/estimator_main.cpp
-# )
-# target_link_libraries(estimator_node 
-#   ${PROJECT_NAME}_core
-#   ${catkin_LIBRARIES}
-# )
+# Main Estimator Node - NOW UNCOMMENTED
+add_executable(estimator_node 
+  src/estimator/estimator_node.cpp
+  src/nodes/estimator_main.cpp
+)
+target_link_libraries(estimator_node 
+  ${PROJECT_NAME}_core
+  ${catkin_LIBRARIES}
+)
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
@@ -195,9 +195,9 @@ include_directories(
 ## same as for the library above
 # add_dependencies(${PROJECT_NAME}_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
-# add_dependencies(estimator_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+add_dependencies(estimator_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
-# Mapping node (separate as per architecture) - COMMENTED OUT until source files are created
+# Mapping node (separate as per architecture) - COMMENTED OUT until mapping files are created
 # add_executable(mapping_node
 #   src/mapping/occupancy_mapping_node.cpp
 #   src/mapping/cone_detector.cpp
@@ -206,12 +206,12 @@ include_directories(
 # target_link_libraries(mapping_node ${catkin_LIBRARIES})
 # add_dependencies(mapping_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
-# Install targets - COMMENTED OUT until executables are created
-# install(TARGETS estimator_node mapping_node ${PROJECT_NAME}_core
-#   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-#   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-#   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-# )
+# Install targets - NOW UNCOMMENTED
+install(TARGETS estimator_node ${PROJECT_NAME}_core
+  ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
 
 ## Specify libraries to link a library or executable target against
 # target_link_libraries(${PROJECT_NAME}_node
