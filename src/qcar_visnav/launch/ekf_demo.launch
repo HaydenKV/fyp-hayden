@@ -1,0 +1,45 @@
+<launch>
+    <!-- Simple EKF Demo - QCar driving around Track1 -->
+    
+    <!-- Load your estimator parameters -->
+    <rosparam file="$(find qcar_visnav)/config/estimator_params.yaml" command="load"/>
+    
+    <!-- Enable debug output -->
+    <param name="estimator_node/publish_debug" value="true"/>
+    <param name="estimator_node/verbosity" value="1"/>
+    
+    <!-- Robot description -->
+    <param name="robot_description" command="$(find xacro)/xacro $(find qcar_gazebo)/urdf/qcar_model.xacro" />
+    
+    <!-- State publishers -->
+    <node name="joint_state_publisher" pkg="joint_state_publisher" type="joint_state_publisher"/>
+    <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher">
+        <remap from="/joint_states" to="/qcar/joint_states" />
+    </node>
+    
+    <!-- Gazebo simulation with Track1 -->
+    <include file="$(find gazebo_ros)/launch/empty_world.launch">
+        <arg name="world_name" value="$(find qcar_gazebo)/worlds/Track1.world"/>
+        <arg name="gui" value="true"/>
+        <arg name="verbose" value="false"/>
+        <arg name="paused" value="false"/>
+    </include>
+    
+    <!-- Spawn QCar at Track1 starting position -->
+    <node name="spawn_qcar" pkg="gazebo_ros" type="spawn_model" output="screen"
+          args="-urdf -param robot_description -model qcar
+                -x -4.3 -y 3.0 -z 0.0
+                -R 0.0 -P 0.0 -Y -3.14"/>
+    
+    <!-- Vehicle controllers (needed for QCar to move) -->
+    <node name="controller_spawner" pkg="controller_manager" type="spawner" output="screen"
+          ns="/qcar" args="base_fr_controller base_fl_controller joint_state_controller"/>
+    
+    <!-- GUIDANCE AND CONTROL - Makes QCar drive around track -->
+    <node name="guidance_node" pkg="qcar_guidance" type="example_guidance_node.py" output="log"/>
+    <node name="control_node" pkg="qcar_control" type="example_control_node" output="log"/>
+    
+    <!-- YOUR EKF ESTIMATOR NODE - This will process the sensor data -->
+    <node name="estimator_node" pkg="qcar_visnav" type="estimator_node" output="screen"/>
+    
+</launch>
