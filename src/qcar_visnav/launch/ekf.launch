@@ -1,0 +1,16 @@
+<launch>
+  <!-- Load all EKF params (frames, Q/R, geometry, topics) -->
+  <rosparam file="$(find qcar_visnav)/config/ekf.yaml" command="load"/>
+
+  <!-- Start the EKF node -->
+  <node pkg="qcar_visnav"
+        type="ekf_node"
+        name="qcar_ekf"
+        output="screen">
+
+    <!-- If your joint states are namespaced by controllers, feed them to the EKF -->
+    <!-- Remove this remap if your joint states are plain /joint_states -->
+    <remap from="/joint_states" to="/qcar/joint_states"/>
+
+  </node>
+</launch>

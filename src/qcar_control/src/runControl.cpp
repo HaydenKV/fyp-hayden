@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <vector>
 #include <math.h>
+#include <iomanip>
 
 #include "classControl.h"
 

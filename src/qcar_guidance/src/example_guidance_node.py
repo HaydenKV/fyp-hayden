@@ -119,7 +119,8 @@ if __name__ == '__main__':
 	# ax.set_aspect('equal', adjustable='box')
 	# plt.show()
 
-	rate = rospy.Rate(0.2)
+	# rate = rospy.Rate(0.2)
+	rate = rospy.Rate(0.1)
 	while not rospy.is_shutdown():
 		trajectoryTopic = TrajectoryMessage()
 		trajectoryTopic.waypoint_times = waypoint_times

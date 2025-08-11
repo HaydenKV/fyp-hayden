@@ -76,10 +76,11 @@ double classControl::getVel()
 // this callback should talk to the navigation topics i.e not /odom. Talk to the simulated sensors instead.
 void classControl::init_navSub()
 {
-	subNav = n->subscribe("/odom", 0, &classControl::navCallback, this);
+	subNav = n->subscribe("/odom", 0, &classControl::navCallback, this); // True states
+    //subNav = n->subscribe<nav_msgs::Odometry>("/qcar/ekf/odom", 10, &classControl::navCallback, this);
 }
 
-// navigation suscriber callback function
+// navigation subscriber callback function
 void classControl::navCallback(const nav_msgs::Odometry::ConstPtr& msg)
 {
 	qcarStates.North = msg->pose.pose.position.y;
