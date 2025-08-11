@@ -1,6 +1,7 @@
 imu_topic: "/imu"
 joint_states_topic: "/qcar/joint_states"
 odom_topic: "/qcar/ekf/odom"
+drive_wheel_joints: ["wheelfl_motor", "wheelfr_motor"]
 
 odom_frame: "odom"
 base_frame: "base_link"

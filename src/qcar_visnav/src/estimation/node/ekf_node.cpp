@@ -6,11 +6,10 @@
 #include <tf/transform_datatypes.h>
 
 #include <Eigen/Dense>
+#include <algorithm>
 #include <string>
 #include <vector>
-#include <numeric>
 #include <cmath>
-#include <algorithm> // for std::max
 
 #include "qcar_visnav/estimation/model/kinematic_model.h"
 #include "qcar_visnav/estimation/ekf/ekf_core.h"
@@ -21,147 +20,160 @@ namespace qcar_nav {
 
 class EkfNode {
 public:
-  EkfNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
-  : nh_(nh), pnh_(pnh)
+  EkfNode(ros::NodeHandle& nh, ros::NodeHandle& pnh) : nh_(nh), pnh_(pnh)
   {
-    // ---- Load parameters (all from YAML) ----
-    pnh_.param<std::string>("imu_topic", imu_topic_, std::string("/imu/data"));
+    // ---- params (all from YAML) ----
+    pnh_.param<std::string>("imu_topic",          imu_topic_,          std::string("/imu"));
     pnh_.param<std::string>("joint_states_topic", joint_states_topic_, std::string("/qcar/joint_states"));
-    pnh_.param<std::string>("odom_topic", odom_topic_, std::string("/qcar/ekf/odom"));
+    pnh_.param<std::string>("odom_topic",         odom_topic_,         std::string("/qcar/ekf/odom"));
 
     pnh_.param<std::string>("odom_frame", odom_frame_, std::string("odom"));
     pnh_.param<std::string>("base_frame", base_frame_, std::string("base_link"));
     pnh_.param("publish_tf", publish_tf_, true);
 
-    pnh_.param("gyro_std",  gyro_std_,  0.01);
-    pnh_.param("speed_std", speed_std_, 0.01);
+    pnh_.param("gyro_std",  gyro_std_,  0.05);   // rad/s
+    pnh_.param("speed_std", speed_std_, 0.10);   // m/s
 
-    // Wheel / timing
-    pnh_.param("rw", rw_, 0.033);
-    pnh_.param("dtMaxEst", dtMaxEst_, 0.01);
+    pnh_.param("rw", rw_, 0.033);                // wheel radius [m]
+    pnh_.param("dtMaxEst", dtMaxEst_, 0.01);     // dt clamp [s]
 
-    // Gravity handling
     pnh_.param<std::string>("gravity_mode", gravity_mode_, std::string("startup_avg"));
-    pnh_.param("startup_calib_time", startup_calib_time_, 0.0);
-    pnh_.param("imu_lpf_hz",         imu_lpf_hz_,         15.0);
+    pnh_.param("startup_calib_time", startup_calib_time_, 2.5);
+    pnh_.param("imu_lpf_hz", imu_lpf_hz_, 15.0);
 
-    // Initial pose from YAML
+    // initial pose
     double init_x=0.0, init_y=0.0, init_yaw=0.0;
-    pnh_.param("init_x",   init_x,   0.0);
-    pnh_.param("init_y",   init_y,   0.0);
+    pnh_.param("init_x", init_x, 0.0);
+    pnh_.param("init_y", init_y, 0.0);
     pnh_.param("init_yaw", init_yaw, 0.0);
 
-    // Process noise vector q for [X,Y,psi,v,r,bg,ba]
-    XmlRpc::XmlRpcValue q_list;
-    if (pnh_.getParam("q", q_list) && q_list.getType()==XmlRpc::XmlRpcValue::TypeArray && q_list.size()==7) {
-      for (int i=0;i<7;++i) model_params_.q(i) = static_cast<double>(q_list[i]);
-    } else {
-      model_params_.q << 1e-12, 1e-12, 1e-10, 1e-10, 1e-6,  1e-10,  1e-10;
+    // drive wheel joint names
+    {
+      XmlRpc::XmlRpcValue names;
+      if (pnh_.getParam("drive_wheel_joints", names) &&
+          names.getType() == XmlRpc::XmlRpcValue::TypeArray && names.size() >= 1) {
+        for (int i = 0; i < names.size(); ++i)
+          drive_joints_.push_back(static_cast<std::string>(names[i]));
+      } else {
+        // sensible default for your model
+        drive_joints_ = {"wheelfl_motor","wheelfr_motor"};
+      }
     }
 
-    // ---- Publishers / Subscribers ----
+    // process noise q for [X,Y,psi,v,r,bg,ba] (continuous-time variances)
+    {
+      XmlRpc::XmlRpcValue q_list;
+      if (pnh_.getParam("q", q_list) &&
+          q_list.getType() == XmlRpc::XmlRpcValue::TypeArray && q_list.size() == 7) {
+        for (int i=0; i<7; ++i) model_params_.q(i) = static_cast<double>(q_list[i]);
+      } else {
+        model_params_.q << 1e-8,1e-8,1e-6,1e-4,5e-3,1e-6,1e-6;
+      }
+    }
+
+    // ---- pubs/subs ----
     odom_pub_ = nh_.advertise<nav_msgs::Odometry>(odom_topic_, 10);
     imu_sub_  = nh_.subscribe(imu_topic_, 100, &EkfNode::imuCb, this);
     js_sub_   = nh_.subscribe(joint_states_topic_, 50, &EkfNode::jointStatesCb, this);
 
-    // ---- Initialize EKF (use YAML initial pose) ----
+    // ---- EKF init (from YAML) ----
     SREKF::Vec mu0 = SREKF::Vec::Zero();
     mu0(0)=init_x; mu0(1)=init_y; mu0(2)=init_yaw;
-    ekf_.setInitial(mu0, SREKF::Mat::Identity()*1e-3);
-
+    ekf_.setInitial(mu0, SREKF::Mat::Identity() * 1e-3);
     model_.setParams(model_params_);
 
-    // runtime state
+    // runtime vars
     last_imu_stamp_ = ros::Time(0);
     a_meas_x_lp_ = 0.0;
     g_x_ = 0.0;
     calib_done_ = (gravity_mode_ != "startup_avg");
 
-    ROS_INFO("[EKF] imu=%s  joints=%s  odom_out=%s  frames=%s->%s  TF=%s  init=(%.3f,%.3f,%.3f)",
-            imu_topic_.c_str(), joint_states_topic_.c_str(), odom_topic_.c_str(),
-            odom_frame_.c_str(), base_frame_.c_str(), publish_tf_ ? "on" : "off",
-            init_x, init_y, init_yaw);
-
+    ROS_INFO("[EKF] imu=%s  joints=%s  odom_out=%s  frames=%s->%s  TF=%s  init=(%.3f,%.3f,%.3f)  wheels=%zu",
+             imu_topic_.c_str(), joint_states_topic_.c_str(), odom_topic_.c_str(),
+             odom_frame_.c_str(), base_frame_.c_str(), publish_tf_ ? "on":"off",
+             init_x, init_y, init_yaw, drive_joints_.size());
   }
 
 private:
-  // ====== Callbacks ==========================================================
+  // ===================== IMU =====================
   void imuCb(const sensor_msgs::Imu::ConstPtr& msg)
   {
     const ros::Time stamp = msg->header.stamp;
     double dt = 0.0;
-    
+
     if (last_imu_stamp_.isZero()) {
       last_imu_stamp_ = stamp;
-      return; // wait for next IMU to get dt
+      return; // need two IMU stamps to get dt
     } else {
       dt = (stamp - last_imu_stamp_).toSec();
-      // guard: clamp dt to avoid large jumps
       if (dt <= 0.0 || dt > 0.1) dt = dtMaxEst_;
     }
 
-    // ---- Gravity startup calibration (optional) ----
+    // gravity calibration (startup_avg)
     if (!calib_done_ && gravity_mode_ == "startup_avg") {
       if (calib_count_ == 0) calib_start_ = stamp;
       calib_sum_ax_ += msg->linear_acceleration.x;
-      calib_count_++;
-
+      ++calib_count_;
       const double elapsed = (stamp - calib_start_).toSec();
       if (elapsed >= startup_calib_time_) {
-        g_x_ = calib_sum_ax_ / std::max(1, calib_count_);
+        g_x_ = (calib_count_>0) ? (calib_sum_ax_ / calib_count_) : 0.0;
         calib_done_ = true;
-        ROS_INFO("[EKF] Gravity X calibrated = %.5f m/s^2 (startup_avg)", g_x_);
+        ROS_INFO("[EKF] gravity X calibrated = %.5f m/s^2", g_x_);
       }
     }
 
-    // ---- Low-pass filter accel-X ----
+    // accel low-pass
     const double wc = 2.0 * M_PI * std::max(1e-3, imu_lpf_hz_);
     const double alpha = std::exp(-wc * dt);
     const double ax_raw = msg->linear_acceleration.x;
     a_meas_x_lp_ = alpha * a_meas_x_lp_ + (1.0 - alpha) * ax_raw;
 
-    // ---- Set model input and predict ----
+    // model input
     ModelInput u;
     u.a_meas_x = a_meas_x_lp_;
-    u.g_x      = g_x_;   // 0 until calibrated; fine for first seconds
+    u.g_x      = g_x_;
     u.dt       = dt;
+
+    // if disabled, don't let accel drive v
+    if (gravity_mode_ == "off") {
+      u.a_meas_x = 0.0;
+      g_x_ = 0.0;
+    }
     model_.setInput(u);
 
+    // predict
     ekf_.predict(model_, stamp.toSec(), dt);
 
-    // ---- Gyro measurement update (r + bg) ----
+    // gyro Z update (r + bg)
     {
       GyroMeas gyro;
       GyroMeas::ZVec z, h;
       GyroMeas::HVec H;
       gyro.predict(ekf_.mu(), model_params_, h, H);
 
-      z(0,0) = msg->angular_velocity.z;
+      const double wz = msg->angular_velocity.z; // rad/s
+      z(0,0) = wz;
 
       Eigen::Matrix<double,1,1> sqrtR;
       sqrtR(0,0) = gyro_std_;
       ekf_.update(z, h, H, sqrtR);
     }
 
-    // ---- Publish odometry (pose in odom, twist in body) ----
+    // publish
     publishOdom(stamp);
-
     last_imu_stamp_ = stamp;
   }
 
+  // ===================== Wheels =====================
   void jointStatesCb(const sensor_msgs::JointState::ConstPtr& msg)
   {
-    // Derive linear speed from two drive wheels (rear-left/right).
     double w_sum = 0.0;
     int cnt = 0;
 
-    for (size_t i=0;i<msg->name.size();++i) {
+    for (size_t i=0; i<msg->name.size(); ++i) {
       const std::string& j = msg->name[i];
-      if (j.find("wheelrl") != std::string::npos || j.find("wheelrr") != std::string::npos) {
-        if (i < msg->velocity.size()) {
-          w_sum += msg->velocity[i];
-          cnt++;
-        }
+      if (std::find(drive_joints_.begin(), drive_joints_.end(), j) != drive_joints_.end()) {
+        if (i < msg->velocity.size()) { w_sum += msg->velocity[i]; ++cnt; }
       }
     }
     if (cnt < 1) return;
@@ -169,7 +181,6 @@ private:
     const double w_avg  = w_sum / static_cast<double>(cnt); // rad/s
     const double v_meas = w_avg * rw_;                      // m/s
 
-    // Speed measurement update: z_v = v
     SpeedMeas spd;
     SpeedMeas::ZVec z, h;
     SpeedMeas::HVec H;
@@ -181,15 +192,11 @@ private:
     ekf_.update(z, h, H, sqrtR);
   }
 
-  // ====== Odometry publishing ===============================================
+  // ===================== Odom out =====================
   void publishOdom(const ros::Time& stamp)
   {
     const auto& x = ekf_.mu();
-    const double X   = x(0);
-    const double Y   = x(1);
-    const double psi = x(2);
-    const double v   = x(3);
-    const double r   = x(4);
+    const double X=x(0), Y=x(1), psi=x(2), v=x(3), r=x(4);
 
     nav_msgs::Odometry odom;
     odom.header.stamp = stamp;
@@ -203,10 +210,10 @@ private:
     geometry_msgs::Quaternion q = tf::createQuaternionMsgFromYaw(psi);
     odom.pose.pose.orientation = q;
 
-    odom.twist.twist.linear.x  = v;   // body x speed
-    odom.twist.twist.angular.z = r;   // yaw rate
+    odom.twist.twist.linear.x  = v;
+    odom.twist.twist.angular.z = r;
 
-    // Optional: fill covariance from S (diag only for now)
+    // diag covariances from P
     Eigen::Matrix<double,7,7> P = ekf_.S().transpose() * ekf_.S();
     odom.pose.covariance[0]  = P(0,0);
     odom.pose.covariance[7]  = P(1,1);
@@ -229,29 +236,28 @@ private:
     }
   }
 
-  // ====== Members ============================================================
+  // -------- members --------
   ros::NodeHandle nh_, pnh_;
   ros::Subscriber imu_sub_, js_sub_;
   ros::Publisher  odom_pub_;
   tf::TransformBroadcaster tf_broadcaster_;
 
-  // Params
+  // params
   std::string imu_topic_, joint_states_topic_, odom_topic_;
   std::string odom_frame_, base_frame_, gravity_mode_;
+  std::vector<std::string> drive_joints_;
   bool publish_tf_{true};
   double gyro_std_{0.05}, speed_std_{0.10};
   double rw_{0.033}, dtMaxEst_{0.01};
   double startup_calib_time_{2.5}, imu_lpf_hz_{15.0};
 
-  // Model / EKF
+  // model / ekf
   ModelParams model_params_;
   KinematicModel model_;
   SREKF ekf_;
 
-  // Timing
+  // runtime
   ros::Time last_imu_stamp_;
-
-  // Gravity / accel filtering
   bool   calib_done_{false};
   ros::Time calib_start_;
   double calib_sum_ax_{0.0};
@@ -262,7 +268,6 @@ private:
 
 } // namespace qcar_nav
 
-// ====== Main ================================================================
 int main(int argc, char** argv)
 {
   ros::init(argc, argv, "qcar_ekf");
