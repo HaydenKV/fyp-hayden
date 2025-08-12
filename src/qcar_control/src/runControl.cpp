@@ -68,10 +68,10 @@ int main(int argc, char **argv)
                 ros::spinOnce();
                 loop_rate.sleep();
 
-                std::cout << "[Control_Node]" << std::endl;
-                std::cout << "[time]: " << std::fixed << std::setprecision(2) << time*1e-2 << " secs\n";
-                std::cout << "[omga]: " << std::fixed << std::setprecision(2) << omega << " rad/s\n";
-                std::cout << "[dlta]: " << std::fixed << std::setprecision(2) << delta*180.0/M_PI << " deg\n\n\n";
+                // std::cout << "[Control_Node]" << std::endl;
+                // std::cout << "[time]: " << std::fixed << std::setprecision(2) << time*1e-2 << " secs\n";
+                // std::cout << "[omga]: " << std::fixed << std::setprecision(2) << omega << " rad/s\n";
+                // std::cout << "[dlta]: " << std::fixed << std::setprecision(2) << delta*180.0/M_PI << " deg\n\n\n";
 
                 if(time*1e-2 > qcarController.getWPVec().back()-1)
                 {

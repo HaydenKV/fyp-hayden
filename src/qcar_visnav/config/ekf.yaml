@@ -13,15 +13,15 @@ init_y: 3.0
 init_yaw: -3.14
 
 # Process noise (continuous-time variances) [X,Y,psi,v,r,bg,ba]
-q: [1.0e-12, 1.0e-12, 1.0e-10, 1.0e-10, 1.0e-6, 1.0e-10, 1.0e-10]
+q: [1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0] 
 
 # Measurement noise (stdev)
-gyro_std: 0.001
-speed_std: 0.001
+gyro_std: 0.01
+speed_std: 0.01
 
 # Accelerometer handling
 gravity_mode: "off"
-startup_calib_time: 0.0
+startup_calib_time: 1.0
 imu_lpf_hz: 15.0
 
 # Wheel / timing

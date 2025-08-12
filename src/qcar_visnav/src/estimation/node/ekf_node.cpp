@@ -67,7 +67,7 @@ public:
           q_list.getType() == XmlRpc::XmlRpcValue::TypeArray && q_list.size() == 7) {
         for (int i=0; i<7; ++i) model_params_.q(i) = static_cast<double>(q_list[i]);
       } else {
-        model_params_.q << 1e-8,1e-8,1e-6,1e-4,5e-3,1e-6,1e-6;
+        model_params_.q << 1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0;
       }
     }
 
@@ -78,9 +78,35 @@ public:
 
     // ---- EKF init (from YAML) ----
     SREKF::Vec mu0 = SREKF::Vec::Zero();
-    mu0(0)=init_x; mu0(1)=init_y; mu0(2)=init_yaw;
-    ekf_.setInitial(mu0, SREKF::Mat::Identity() * 1e-3);
+    mu0(0) = init_x;
+    mu0(1) = init_y;
+    mu0(2) = init_yaw;
+
+    // Choose desired initial *P* on each state, then set S0 = chol(P0):
+    // P0 diag target: [x,   y,   psi,  v,    r,    bg,    ba]
+    const double P0_x   = 1e-2;
+    const double P0_y   = 1e-2;
+    const double P0_psi = 1e-2;
+    const double P0_v   = 0.25;   // <-- big enough so wheels can pull v
+    const double P0_r   = 0.09;   // e.g. (0.3 rad/s)^2
+    const double P0_bg  = 1e-2;
+    const double P0_ba  = 1e-2;
+
+    SREKF::Mat S0 = SREKF::Mat::Zero();
+    S0(0,0) = std::sqrt(P0_x);
+    S0(1,1) = std::sqrt(P0_y);
+    S0(2,2) = std::sqrt(P0_psi);
+    S0(3,3) = std::sqrt(P0_v);
+    S0(4,4) = std::sqrt(P0_r);
+    S0(5,5) = std::sqrt(P0_bg);
+    S0(6,6) = std::sqrt(P0_ba);
+
+    // IMPORTANT: call setInitial exactly once.
+    ekf_.setInitial(mu0, S0);
+
+    // Then params for the dynamics/noise
     model_.setParams(model_params_);
+
 
     // runtime vars
     last_imu_stamp_ = ros::Time(0);
@@ -151,8 +177,9 @@ private:
       GyroMeas::HVec H;
       gyro.predict(ekf_.mu(), model_params_, h, H);
 
-      const double wz = msg->angular_velocity.z; // rad/s
+      double wz = msg->angular_velocity.z;   // rad/s
       z(0,0) = wz;
+
 
       Eigen::Matrix<double,1,1> sqrtR;
       sqrtR(0,0) = gyro_std_;
@@ -167,30 +194,47 @@ private:
   // ===================== Wheels =====================
   void jointStatesCb(const sensor_msgs::JointState::ConstPtr& msg)
   {
-    double w_sum = 0.0;
+    double w_sum_abs = 0.0; 
     int cnt = 0;
 
-    for (size_t i=0; i<msg->name.size(); ++i) {
+    for (size_t i = 0; i < msg->name.size(); ++i) {
       const std::string& j = msg->name[i];
-      if (std::find(drive_joints_.begin(), drive_joints_.end(), j) != drive_joints_.end()) {
-        if (i < msg->velocity.size()) { w_sum += msg->velocity[i]; ++cnt; }
+      if (j == "wheelfl_motor" || j == "wheelfr_motor") {     // exact names
+        if (i < msg->velocity.size()) {
+          w_sum_abs += std::fabs(msg->velocity[i]);           // <-- use ABS
+          ++cnt;
+        }
       }
     }
     if (cnt < 1) return;
 
-    const double w_avg  = w_sum / static_cast<double>(cnt); // rad/s
-    const double v_meas = w_avg * rw_;                      // m/s
-
-    SpeedMeas spd;
-    SpeedMeas::ZVec z, h;
-    SpeedMeas::HVec H;
+    const double w_avg = w_sum_abs / static_cast<double>(cnt); // rad/s (magnitude)
+    const double v_meas = w_avg * rw_;                         // m/s
+    // Build meas
+    SpeedMeas spd; SpeedMeas::ZVec z, h; SpeedMeas::HVec H;
     spd.predict(ekf_.mu(), model_params_, h, H);
     z(0,0) = v_meas;
 
-    Eigen::Matrix<double,1,1> sqrtR;
-    sqrtR(0,0) = speed_std_;
+    // DEBUG — before update
+    double v_before = ekf_.mu()(3);
+    double innov    = (z - h)(0,0);
+
+    Eigen::Matrix<double,1,1> sqrtR; sqrtR(0,0) = speed_std_;
     ekf_.update(z, h, H, sqrtR);
+
+    // DEBUG — after update
+    double v_after = ekf_.mu()(3);
+    ROS_INFO_THROTTLE(0.5,
+      "[EKF] speed meas: z=%.3f h=%.3f innov=%.3f  v: before=%.3f after=%.3f  R=%.4f",
+      v_meas, h(0,0), innov, v_before, v_after, speed_std_);
+
+    Eigen::Matrix<double,7,7> P = ekf_.S().transpose() * ekf_.S();
+    ROS_INFO_THROTTLE(0.5, "[EKF] Pvv=%.6f  (should be ~1e-2 .. 1e+0 initially)", P(3,3));
+
   }
+
+
+
 
   // ===================== Odom out =====================
   void publishOdom(const ros::Time& stamp)

@@ -18,9 +18,20 @@ find_package(catkin REQUIRED COMPONENTS
   geometry_msgs     # ADDED: used by TF message
 )
 
-## System dependencies are found with CMake's conventions
-# find_package(Boost REQUIRED COMPONENTS system)
-find_package(Eigen3 REQUIRED)   # ADDED: EKF uses Eigen
+find_package(Eigen3 3.3 REQUIRED NO_MODULE)
+
+# Provide legacy vars so catkin_package is happy
+if(TARGET Eigen3::Eigen)
+  get_target_property(_eigen_inc Eigen3::Eigen INTERFACE_INCLUDE_DIRECTORIES)
+  if(_eigen_inc)
+    set(EIGEN3_INCLUDE_DIRS ${_eigen_inc})
+  endif()
+  set(EIGEN3_LIBRARIES Eigen3::Eigen)
+elseif(EIGEN3_INCLUDE_DIR AND NOT EIGEN3_INCLUDE_DIRS)
+  # Fallback for older FindEigen3.cmake
+  set(EIGEN3_INCLUDE_DIRS ${EIGEN3_INCLUDE_DIR})
+endif()
+
 
 ## Uncomment this if the package has a setup.py. This macro ensures
 ## modules and global scripts declared therein get installed
@@ -99,6 +110,7 @@ add_dependencies(ekf_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_
 ## Specify libraries to link a library or executable target against
 target_link_libraries(ekf_node
   ${catkin_LIBRARIES}
+  Eigen3::Eigen
 )
 
 #############
@@ -110,7 +122,7 @@ target_link_libraries(ekf_node
 
 ## Mark executables for installation
 ## See http://docs.ros.org/melodic/api/catkin/html/howto/format1/building_executables.html
-install(TARGETS qcar_ekf_node
+install(TARGETS ekf_node
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -120,3 +132,9 @@ install(DIRECTORY include/${PROJECT_NAME}/
   FILES_MATCHING PATTERN "*.h"
   PATTERN ".svn" EXCLUDE
 )
+
+catkin_install_python(PROGRAMS
+  src/tests/ekf_compare.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+

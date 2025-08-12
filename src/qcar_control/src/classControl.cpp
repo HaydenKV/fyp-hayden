@@ -76,8 +76,8 @@ double classControl::getVel()
 // this callback should talk to the navigation topics i.e not /odom. Talk to the simulated sensors instead.
 void classControl::init_navSub()
 {
-	//subNav = n->subscribe("/odom", 0, &classControl::navCallback, this); // True states
-    subNav = n->subscribe<nav_msgs::Odometry>("/qcar/ekf/odom", 10, &classControl::navCallback, this);
+	subNav    = n->subscribe<nav_msgs::Odometry>("/odom", 10, &classControl::navCallback, this); // True states
+    subNavEKF = n->subscribe<nav_msgs::Odometry>("/qcar/ekf/odom", 10, &classControl::navEKFCallback, this);
 }
 
 // navigation subscriber callback function
@@ -86,14 +86,41 @@ void classControl::navCallback(const nav_msgs::Odometry::ConstPtr& msg)
 	qcarStates.North = msg->pose.pose.position.y;
 	qcarStates.East = msg->pose.pose.position.x;
 	qcarStates.Psi = quat_to_rad(msg->pose.pose.orientation.x, msg->pose.pose.orientation.y, msg->pose.pose.orientation.z, msg->pose.pose.orientation.w);
-	qcarStates.Vel = sqrt(pow(msg->twist.twist.linear.x,2) + pow(msg->twist.twist.linear.y,2));
+	// Get from EKF instead
+    qcarStates.VelTruth = sqrt(pow(msg->twist.twist.linear.x,2) + pow(msg->twist.twist.linear.y,2));
+
+    got_truth_ = true;
+}
+
+void classControl::navEKFCallback(const nav_msgs::Odometry::ConstPtr& msg)
+{
+    //qcarStates.Vel = msg->twist.twist.linear.x;
+	qcarStates.Vel = sqrt(pow(msg->twist.twist.linear.x,2) + pow(msg->twist.twist.linear.y,2)); //magnitude
+
+    ROS_INFO_THROTTLE(1.0, "[control] Velocities: truth=%.3f  ekf=%.3f",
+                    qcarStates.VelTruth,
+                    qcarStates.Vel);
+
+    got_ekf_ = true;
 }
 
 // get qcarStates structure
 States* classControl::getStates()
 {
-	return &qcarStates;
+    // Optional: warn once if either stream hasn’t arrived yet
+    if (!got_truth_)
+        ROS_WARN_THROTTLE(2.0, "[control] Waiting for /odom (truth)...");
+    if (!got_ekf_)
+        ROS_WARN_THROTTLE(2.0, "[control] Waiting for /qcar/ekf/odom (velocity)...");
+    return &qcarStates;
 }
+
+
+// get qcarStates structure (commit for true states use only)
+// States* classControl::getStates()
+// {
+// 	return &qcarStates;
+// }
 
 // quaternions to rads conversion function
 float classControl::quat_to_rad(float x, float y, float z, float w)
