@@ -17,15 +17,15 @@ void SREKF::setInitial(const Vec& mu0, const Mat& S0) {
 
 void SREKF::predict(const qcar_nav::KinematicModel& model, double t, double dt) {
   // 1) RK4 step with Jacobians
-  Eigen::Vector3d sqrtQc; Eigen::Matrix<double,7,3> Jdw;
+  Eigen::Vector3d sqrtQc; Eigen::Matrix<double,7,3> Jdw; 
   RK4SDE::Vec x_next; RK4SDE::Mat Jdx;
   RK4SDE::stepWithJac(model, t, mu_, dt, x_next, Jdx, Jdw); // idxQ defaults to {4,5,6}
 
   // 2) Build discrete process covariance via Jdw
-  Eigen::Vector3d tmp; Eigen::Matrix<double,7,3> L;
-  model.processNoise(dt, tmp, L);
+  Eigen::Vector3d sqrtQc_actual; Eigen::Matrix<double,7,3> L;
+  model.processNoise(dt, sqrtQc_actual, L);
   // Discrete driving noise covariance (choose one consistent scheme)
-  Eigen::Matrix3d Qw = (sqrtQc.array().square()).matrix().asDiagonal() * dt;// white-noise ~ √Hz -> × dt
+  Eigen::Matrix3d Qw = (sqrtQc_actual.array().square()).matrix().asDiagonal() * dt; // white-noise ~ √Hz -> × dt
   // Qk via affine map
   SREKF::Mat Qk = Jdw * Qw * Jdw.transpose();
 

@@ -13,7 +13,7 @@ init_y: 3.0
 init_yaw: -3.14
 
 # Process noise (continuous-time variances) [X,Y,psi,v,r,bg,ba]
-q: [1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0] 
+q: [0.1, 0.1, 0.1, 2.0, 1.0, 0.001, 0.01]
 
 # Measurement noise (stdev)
 gyro_std: 0.01

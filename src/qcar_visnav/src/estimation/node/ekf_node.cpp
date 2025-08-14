@@ -75,6 +75,9 @@ public:
     odom_pub_ = nh_.advertise<nav_msgs::Odometry>(odom_topic_, 10);
     imu_sub_  = nh_.subscribe(imu_topic_, 100, &EkfNode::imuCb, this);
     js_sub_   = nh_.subscribe(joint_states_topic_, 50, &EkfNode::jointStatesCb, this);
+    
+    // Add ground truth subscriber for comparison
+    ground_truth_sub_ = nh_.subscribe("/odom", 1, &EkfNode::groundTruthCb, this);
 
     // ---- EKF init (from YAML) ----
     SREKF::Vec mu0 = SREKF::Vec::Zero();
@@ -107,20 +110,73 @@ public:
     // Then params for the dynamics/noise
     model_.setParams(model_params_);
 
-
     // runtime vars
     last_imu_stamp_ = ros::Time(0);
     a_meas_x_lp_ = 0.0;
     g_x_ = 0.0;
     calib_done_ = (gravity_mode_ != "startup_avg");
 
-    ROS_INFO("[EKF] imu=%s  joints=%s  odom_out=%s  frames=%s->%s  TF=%s  init=(%.3f,%.3f,%.3f)  wheels=%zu",
+    // Replace the original ROS_INFO with initialization message
+    ROS_INFO("[EKF] Node initialized - subscribing to %s for ground truth comparison", "/odom");
+    ROS_INFO("[EKF] Config: imu=%s joints=%s odom_out=%s TF=%s init=(%.3f,%.3f,%.3f°)",
              imu_topic_.c_str(), joint_states_topic_.c_str(), odom_topic_.c_str(),
-             odom_frame_.c_str(), base_frame_.c_str(), publish_tf_ ? "on":"off",
-             init_x, init_y, init_yaw, drive_joints_.size());
+             publish_tf_ ? "on":"off", init_x, init_y, init_yaw*180/M_PI);
   }
 
 private:
+  // Ground truth callback for comparison
+  void groundTruthCb(const nav_msgs::Odometry::ConstPtr& msg) {
+    latest_ground_truth_ = *msg;
+    has_ground_truth_ = true;
+  }
+
+  // State comparison logging function
+  void logStateComparison(const nav_msgs::Odometry& estimate) {
+    if (!has_ground_truth_) return;
+    
+    // Extract true states
+    double true_x = latest_ground_truth_.pose.pose.position.x;
+    double true_y = latest_ground_truth_.pose.pose.position.y;
+    double true_psi = tf::getYaw(latest_ground_truth_.pose.pose.orientation);
+    double true_vx = latest_ground_truth_.twist.twist.linear.x;
+    double true_vy = latest_ground_truth_.twist.twist.linear.y;
+    double true_v = sqrt(true_vx*true_vx + true_vy*true_vy);
+    double true_r = latest_ground_truth_.twist.twist.angular.z;
+    
+    // Extract estimated states
+    double est_x = estimate.pose.pose.position.x;
+    double est_y = estimate.pose.pose.position.y;
+    double est_psi = tf::getYaw(estimate.pose.pose.orientation);
+    double est_v = estimate.twist.twist.linear.x;
+    double est_r = estimate.twist.twist.angular.z;
+    
+    // Get EKF internal states
+    const auto& ekf_state = ekf_.mu();
+    double est_bg = ekf_state(5);  // gyro bias
+    double est_ba = ekf_state(6);  // accel bias
+    
+    // Calculate errors
+    double err_x = est_x - true_x;
+    double err_y = est_y - true_y;
+    double err_psi = est_psi - true_psi;
+    // Wrap angle error to [-pi, pi]
+    while (err_psi > M_PI) err_psi -= 2*M_PI;
+    while (err_psi < -M_PI) err_psi += 2*M_PI;
+    double err_v = est_v - true_v;
+    double err_r = est_r - true_r;
+    double err_pos = sqrt(err_x*err_x + err_y*err_y);
+    
+    // Get covariance trace for uncertainty monitoring
+    Eigen::Matrix<double,7,7> P = ekf_.S().transpose() * ekf_.S();
+    double cov_trace = P.diagonal().sum();
+    
+    ROS_INFO_THROTTLE(1.0, 
+      "[EKF] TRUE: (%.2f,%.2f,%.1f°,%.2f,%.2f) | EST: (%.2f,%.2f,%.1f°,%.2f,%.2f) | ERR: pos=%.3fm hdg=%.1f° | bias: bg=%.3f ba=%.3f | cov_tr=%.3f",
+      true_x, true_y, true_psi*180/M_PI, true_v, true_r,
+      est_x, est_y, est_psi*180/M_PI, est_v, est_r,
+      err_pos, err_psi*180/M_PI, est_bg, est_ba, cov_trace);
+  }
+
   // ===================== IMU =====================
   void imuCb(const sensor_msgs::Imu::ConstPtr& msg)
   {
@@ -170,6 +226,10 @@ private:
     // predict
     ekf_.predict(model_, stamp.toSec(), dt);
 
+    double wz = msg->angular_velocity.z;
+    ROS_INFO_THROTTLE(1.0, "[DEBUG] wz_raw=%.4f, r_est=%.4f, bg=%.6f, innovation=%.4f", 
+                      wz, ekf_.mu()(4), ekf_.mu()(5), wz - (ekf_.mu()(4) + ekf_.mu()(5)));
+
     // gyro Z update (r + bg)
     {
       GyroMeas gyro;
@@ -179,7 +239,6 @@ private:
 
       double wz = msg->angular_velocity.z;   // rad/s
       z(0,0) = wz;
-
 
       Eigen::Matrix<double,1,1> sqrtR;
       sqrtR(0,0) = gyro_std_;
@@ -222,19 +281,15 @@ private:
     Eigen::Matrix<double,1,1> sqrtR; sqrtR(0,0) = speed_std_;
     ekf_.update(z, h, H, sqrtR);
 
-    // DEBUG — after update
-    double v_after = ekf_.mu()(3);
-    ROS_INFO_THROTTLE(0.5,
-      "[EKF] speed meas: z=%.3f h=%.3f innov=%.3f  v: before=%.3f after=%.3f  R=%.4f",
-      v_meas, h(0,0), innov, v_before, v_after, speed_std_);
+    // // DEBUG — after update
+    // double v_after = ekf_.mu()(3);
+    // ROS_INFO_THROTTLE(0.5,
+    //   "[EKF] speed meas: z=%.3f h=%.3f innov=%.3f  v: before=%.3f after=%.3f  R=%.4f",
+    //   v_meas, h(0,0), innov, v_before, v_after, speed_std_);
 
-    Eigen::Matrix<double,7,7> P = ekf_.S().transpose() * ekf_.S();
-    ROS_INFO_THROTTLE(0.5, "[EKF] Pvv=%.6f  (should be ~1e-2 .. 1e+0 initially)", P(3,3));
-
+    // Eigen::Matrix<double,7,7> P = ekf_.S().transpose() * ekf_.S();
+    // ROS_INFO_THROTTLE(0.5, "[EKF] Pvv=%.6f  (should be ~1e-2 .. 1e+0 initially)", P(3,3));
   }
-
-
-
 
   // ===================== Odom out =====================
   void publishOdom(const ros::Time& stamp)
@@ -267,6 +322,9 @@ private:
 
     odom_pub_.publish(odom);
 
+    // Log state comparison
+    logStateComparison(odom);
+
     if (publish_tf_) {
       geometry_msgs::TransformStamped tf_msg;
       tf_msg.header.stamp = stamp;
@@ -282,7 +340,7 @@ private:
 
   // -------- members --------
   ros::NodeHandle nh_, pnh_;
-  ros::Subscriber imu_sub_, js_sub_;
+  ros::Subscriber imu_sub_, js_sub_, ground_truth_sub_;
   ros::Publisher  odom_pub_;
   tf::TransformBroadcaster tf_broadcaster_;
 
@@ -308,6 +366,10 @@ private:
   int    calib_count_{0};
   double g_x_{0.0};
   double a_meas_x_lp_{0.0};
+
+  // State comparison members
+  nav_msgs::Odometry latest_ground_truth_;
+  bool has_ground_truth_{false};
 };
 
 } // namespace qcar_nav
