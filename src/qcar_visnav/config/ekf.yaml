@@ -1,29 +1,23 @@
+# Minimal 6-State Velocity EKF Configuration
+# State: [vx, vy, r, bg, bax, bay]
+
+# Topics
 imu_topic: "/imu"
 joint_states_topic: "/qcar/joint_states"
 odom_topic: "/qcar/ekf/odom"
-drive_wheel_joints: ["wheelfl_motor", "wheelfr_motor"]
 
+# Frames
 odom_frame: "odom"
 base_frame: "base_link"
-publish_tf: true
 
-# Initial pose (match spawn)
-init_x: -4.3
-init_y: 3.0
-init_yaw: -3.14
+# Measurement noise (standard deviations)
+gyro_std: 0.01    # Gyro noise (rad/s)
+speed_std: 0.01   # Speed measurement noise (m/s)
 
-# Process noise (continuous-time variances) [X,Y,psi,v,r,bg,ba]
-q: [0.1, 0.1, 0.1, 2.0, 1.0, 0.001, 0.01]
+# Vehicle parameters
+wheelbase: 0.258  # QCar wheelbase (m)
+rw: 0.033        # Wheel radius (m)
+dtMaxEst: 0.01   # Max time step (s)
 
-# Measurement noise (stdev)
-gyro_std: 0.01
-speed_std: 0.01
-
-# Accelerometer handling
-gravity_mode: "off"
-startup_calib_time: 1.0
-imu_lpf_hz: 15.0
-
-# Wheel / timing
-rw: 0.033
-dtMaxEst: 0.01
+# Process noise for [vx, vy, r, bg, bax, bay]
+q: [2.0, 2.0, 1.0, 0.001, 0.01, 0.01]

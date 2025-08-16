@@ -1,140 +1,77 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(qcar_visnav)
 
-## Compile as C++11, supported in ROS Kinetic and newer
-add_compile_options(-std=c++11)
+add_compile_options(-std=c++14)
 
-## Find catkin macros and libraries
-## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
-## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
   roscpp
   rospy
   sensor_msgs
   std_msgs
-  nav_msgs          # ADDED: we publish nav_msgs/Odometry
+  nav_msgs
+  geometry_msgs
   tf
-  tf2_ros           # ADDED: we broadcast TF
-  geometry_msgs     # ADDED: used by TF message
+  tf2_ros
 )
 
-find_package(Eigen3 3.3 REQUIRED NO_MODULE)
+find_package(Eigen3 REQUIRED)
 
-# Provide legacy vars so catkin_package is happy
-if(TARGET Eigen3::Eigen)
-  get_target_property(_eigen_inc Eigen3::Eigen INTERFACE_INCLUDE_DIRECTORIES)
-  if(_eigen_inc)
-    set(EIGEN3_INCLUDE_DIRS ${_eigen_inc})
-  endif()
-  set(EIGEN3_LIBRARIES Eigen3::Eigen)
-elseif(EIGEN3_INCLUDE_DIR AND NOT EIGEN3_INCLUDE_DIRS)
-  # Fallback for older FindEigen3.cmake
-  set(EIGEN3_INCLUDE_DIRS ${EIGEN3_INCLUDE_DIR})
-endif()
-
-
-## Uncomment this if the package has a setup.py. This macro ensures
-## modules and global scripts declared therein get installed
-## See http://ros.org/doc/api/catkin/html/user_guide/setup_dot_py.html
-# catkin_python_setup()
-
-################################################
-## Declare ROS messages, services and actions ##
-################################################
-## (unchanged; none generated here)
-
-###################################
-## catkin specific configuration ##
-###################################
-## The catkin_package macro generates cmake config files for your package
-## Declare things to be passed to dependent projects
-## INCLUDE_DIRS: uncomment this if your package contains header files
-## LIBRARIES: libraries you create in this project that dependent projects also need
-## CATKIN_DEPENDS: catkin_packages dependent projects also need
-## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
-  INCLUDE_DIRS include              # ADDED: expose public headers
-  # LIBRARIES qcar_visnav
+  INCLUDE_DIRS include
   CATKIN_DEPENDS roscpp rospy sensor_msgs std_msgs nav_msgs tf2_ros geometry_msgs tf
-  DEPENDS Eigen3                    # ADDED: Eigen is a system dep
+  DEPENDS Eigen3
 )
 
-###########
-## Build ##
-###########
-
-## Specify additional locations of header files
-## Your package locations should be listed before other locations
 include_directories(
-  include                           # ADDED: our public headers live here
+  include
   ${catkin_INCLUDE_DIRS}
-  ${EIGEN3_INCLUDE_DIRS}            # ADDED
+  ${EIGEN3_INCLUDE_DIRS}
 )
 
-## Declare a C++ library
-# add_library(${PROJECT_NAME}
-#   src/${PROJECT_NAME}/qcar_visnav.cpp
-# )
-
-## Add cmake target dependencies of the library
-## as an example, code may need to be generated before libraries
-## either from message generation or dynamic reconfigure
-# add_dependencies(${PROJECT_NAME} ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-
-## Declare a C++ executable
-## With catkin_make all packages are built within a single CMake context
-## The recommended prefix ensures that target names across packages don't collide
-
-# ADDED: EKF node and sources
+# Minimal EKF sources - only what we need
 set(QCAR_VISNAV_SRCS
   src/estimation/model/kinematic_model.cpp
-  src/estimation/integrators/rk4sde.cpp
   src/estimation/ekf/ekf_core.cpp
   src/estimation/sensors/gyro.cpp
-  src/estimation/node/ekf_node.cpp
   src/estimation/sensors/speed.cpp
+  src/estimation/utils/odometry_buffer.cpp
+  src/estimation/node/ekf_node.cpp
 )
 
 add_executable(ekf_node ${QCAR_VISNAV_SRCS})
 
-## Rename C++ executable without prefix
-## The above recommended prefix causes long target names, the following renames the
-## target back to the shorter version for ease of user use
-## e.g. "rosrun someones_pkg node" instead of "rosrun someones_pkg someones_pkg_node"
 set_target_properties(ekf_node PROPERTIES OUTPUT_NAME ekf_node PREFIX "")
 
-## Add cmake target dependencies of the executable
-## same as for the library above
 add_dependencies(ekf_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
-## Specify libraries to link a library or executable target against
 target_link_libraries(ekf_node
   ${catkin_LIBRARIES}
   Eigen3::Eigen
 )
 
-#############
-## Install ##
-#############
-
-# all install targets should use catkin DESTINATION variables
-# See http://ros.org/doc/api/catkin/html/adv_user_guide/variables.html
-
-## Mark executables for installation
-## See http://docs.ros.org/melodic/api/catkin/html/howto/format1/building_executables.html
+# Install
 install(TARGETS ekf_node
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
-## Mark cpp header files for installation
 install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
   FILES_MATCHING PATTERN "*.h"
   PATTERN ".svn" EXCLUDE
 )
 
-catkin_install_python(PROGRAMS
-  src/tests/ekf_compare.py
-  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+install(DIRECTORY launch/
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch
+  FILES_MATCHING PATTERN "*.launch"
 )
 
+install(DIRECTORY config/
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/config
+  FILES_MATCHING PATTERN "*.yaml"
+)
+
+# Install Python scripts
+catkin_install_python(PROGRAMS
+  scripts/simple_motion_test.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)

@@ -1,72 +1,133 @@
 #include "qcar_visnav/estimation/ekf/ekf_core.h"
-#include "qcar_visnav/estimation/integrators/rk4sde.h"
+#include "qcar_visnav/estimation/model/kinematic_model.h"
 #include <cmath>
+#include <iostream>
 
 namespace qcar_nav {
 
-SREKF::SREKF() {
+template<int STATE_SIZE>
+EkfCore<STATE_SIZE>::EkfCore() {
   mu_.setZero();
   S_.setIdentity();
-  S_ *= 1e-1;
+  S_ *= 0.1;  // Small initial uncertainty
 }
 
-void SREKF::setInitial(const Vec& mu0, const Mat& S0) {
+template<int STATE_SIZE>
+void EkfCore<STATE_SIZE>::setInitial(const Vec& mu0, const Mat& S0) {
   mu_ = mu0;
-  S_  = S0;
+  S_ = S0;
 }
 
-void SREKF::predict(const qcar_nav::KinematicModel& model, double t, double dt) {
-  // 1) RK4 step with Jacobians
-  Eigen::Vector3d sqrtQc; Eigen::Matrix<double,7,3> Jdw; 
-  RK4SDE::Vec x_next; RK4SDE::Mat Jdx;
-  RK4SDE::stepWithJac(model, t, mu_, dt, x_next, Jdx, Jdw); // idxQ defaults to {4,5,6}
+template<int STATE_SIZE>
+void EkfCore<STATE_SIZE>::predict(const KinematicModel& model, double t, double dt) {
+  // 1. Predict state using kinematic model
+  auto x_pred = model.predict(mu_, t, dt);
 
-  // 2) Build discrete process covariance via Jdw
-  Eigen::Vector3d sqrtQc_actual; Eigen::Matrix<double,7,3> L;
-  model.processNoise(dt, sqrtQc_actual, L);
-  // Discrete driving noise covariance (choose one consistent scheme)
-  Eigen::Matrix3d Qw = (sqrtQc_actual.array().square()).matrix().asDiagonal() * dt; // white-noise ~ √Hz -> × dt
-  // Qk via affine map
-  SREKF::Mat Qk = Jdw * Qw * Jdw.transpose();
+  // 2. Compute Jacobians - these return the correct 6x6 and 6x3 matrices
+  auto F = model.getProcessJacobian(mu_, dt);        // 6x6
+  auto G = model.getInputJacobian(mu_, dt);          // 6x3
 
-  // 3) Covariance predict via P
-  SREKF::Mat P  = S_.transpose() * S_;
-  SREKF::Mat Pn = Jdx * P * Jdx.transpose() + Qk;
-  Pn = 0.5*(Pn + Pn.transpose());
-  Eigen::LLT<SREKF::Mat> llt(Pn);
-  S_ = llt.matrixU();
-  mu_ = x_next;
-  mu_(2) = std::atan2(std::sin(mu_(2)), std::cos(mu_(2)));
+  // 3. Compute noise covariances
+  auto Qx = model.getProcessNoise(dt);               // 6x6
+  auto Qu = model.getInputNoise(dt);                 // 3x3
 
+  // 4. Propagate covariance: P^- = F*P*F^T + G*Qu*G^T + Qx
+  Mat P = S_.transpose() * S_;                       // 6x6
+  Mat P_pred = F * P * F.transpose() + G * Qu * G.transpose() + Qx;  // All 6x6
+
+  // 5. Regularize and update
+  P_pred = regularizeCovariance(P_pred);
+  
+  // 6. Compute new square-root via Cholesky decomposition
+  Eigen::LLT<Mat> llt(P_pred);
+  if (llt.info() == Eigen::Success) {
+    S_ = llt.matrixU();  // Upper triangular
+  } else {
+    // Fallback: use eigenvalue decomposition for numerical stability
+    Eigen::SelfAdjointEigenSolver<Mat> eigensolver(P_pred);
+    if (eigensolver.info() == Eigen::Success) {
+      auto eigenvals = eigensolver.eigenvalues().array().max(1e-12);
+      Mat sqrt_lambda = eigenvals.sqrt().matrix().asDiagonal();
+      S_ = eigensolver.eigenvectors() * sqrt_lambda;
+    } else {
+      // Last resort: identity with small scaling
+      S_.setIdentity();
+      S_ *= 0.1;
+      std::cerr << "[EKF] Warning: Covariance decomposition failed, resetting to identity" << std::endl;
+    }
+  }
+
+  // 7. Update state
+  mu_ = x_pred;
+
+  // No angle wrapping needed for velocity-only EKF
 }
 
-void SREKF::update(const Eigen::VectorXd& z,
-                   const Eigen::VectorXd& h,
-                   const Eigen::MatrixXd& H,
-                   const Eigen::MatrixXd& sqrtR)
-{
-  // P from square root
+template<int STATE_SIZE>
+void EkfCore<STATE_SIZE>::update(const Eigen::VectorXd& z,
+                                 const Eigen::VectorXd& h,
+                                 const Eigen::MatrixXd& H,
+                                 const Eigen::MatrixXd& sqrtR) {
+  // 1. Current covariance
   Mat P = S_.transpose() * S_;
 
-  // innovation
+  // 2. Innovation
   Eigen::VectorXd y = z - h;
 
-  // Kalman gain
-  Eigen::MatrixXd Szz = H * P * H.transpose() + (sqrtR.transpose() * sqrtR);
-  Eigen::MatrixXd K   = P * H.transpose() * Szz.inverse();
+  // 3. Innovation covariance
+  Eigen::MatrixXd R = sqrtR.transpose() * sqrtR;
+  Eigen::MatrixXd S_innov = H * P * H.transpose() + R;
 
-  // state update
-  mu_.noalias() += K * y;
-  mu_(2) = std::atan2(std::sin(mu_(2)), std::cos(mu_(2)));
+  // 4. Kalman gain
+  Eigen::MatrixXd K = P * H.transpose() * S_innov.inverse();
 
-  // Joseph form for numerical stability
+  // 5. State update
+  mu_ += K * y;
+
+  // 6. Covariance update using Joseph form for numerical stability
   Mat I = Mat::Identity();
-  Mat Pn = (I - K*H) * P * (I - K*H).transpose() + K * (sqrtR.transpose()*sqrtR) * K.transpose();
-  Pn = 0.5 * (Pn + Pn.transpose());
+  Mat P_updated = (I - K * H) * P * (I - K * H).transpose() + K * R * K.transpose();
 
-  // Refresh S via Cholesky
-  Eigen::LLT<Mat> llt(Pn);
-  S_ = llt.matrixU();
+  // 7. Regularize and update square-root
+  P_updated = regularizeCovariance(P_updated);
+  
+  Eigen::LLT<Mat> llt(P_updated);
+  if (llt.info() == Eigen::Success) {
+    S_ = llt.matrixU();
+  } else {
+    // Fallback using eigenvalue decomposition
+    Eigen::SelfAdjointEigenSolver<Mat> eigensolver(P_updated);
+    if (eigensolver.info() == Eigen::Success) {
+      auto eigenvals = eigensolver.eigenvalues().array().max(1e-12);
+      Mat sqrt_lambda = eigenvals.sqrt().matrix().asDiagonal();
+      S_ = eigensolver.eigenvectors() * sqrt_lambda;
+    }
+  }
 }
+
+template<int STATE_SIZE>
+typename EkfCore<STATE_SIZE>::Mat EkfCore<STATE_SIZE>::regularizeCovariance(const Mat& P) const {
+  // Make symmetric
+  Mat P_sym = 0.5 * (P + P.transpose());
+  
+  // Ensure positive definiteness by adding small diagonal regularization
+  const double min_eigenval = 1e-12;
+  Eigen::SelfAdjointEigenSolver<Mat> eigensolver(P_sym);
+  
+  if (eigensolver.info() == Eigen::Success) {
+    auto eigenvals = eigensolver.eigenvalues();
+    if (eigenvals.minCoeff() < min_eigenval) {
+      // Add regularization
+      auto regularized_eigenvals = eigenvals.array().max(min_eigenval);
+      Mat Lambda_reg = regularized_eigenvals.matrix().asDiagonal();
+      return eigensolver.eigenvectors() * Lambda_reg * eigensolver.eigenvectors().transpose();
+    }
+  }
+  
+  return P_sym;
+}
+
+// Explicit template instantiation for 6-state velocity EKF only
+template class EkfCore<6>;
 
 } // namespace qcar_nav

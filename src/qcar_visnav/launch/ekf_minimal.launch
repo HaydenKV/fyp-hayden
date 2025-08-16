@@ -1,0 +1,17 @@
+<launch>
+  <!-- Minimal 6-State Velocity EKF Launch -->
+  
+  <!-- Load minimal EKF configuration -->
+  <rosparam file="$(find qcar_visnav)/config/ekf.yaml" command="load"/>
+
+  <!-- Start the EKF node -->
+  <node pkg="qcar_visnav"
+        type="ekf_node"
+        name="velocity_ekf"
+        output="screen">
+    
+    <!-- Remap topics -->
+    <remap from="/joint_states" to="/qcar/joint_states"/>
+  </node>
+
+</launch>

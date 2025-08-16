@@ -2,11 +2,9 @@
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/JointState.h>
 #include <nav_msgs/Odometry.h>
-#include <tf/transform_broadcaster.h>
 #include <tf/transform_datatypes.h>
 
 #include <Eigen/Dense>
-#include <algorithm>
 #include <string>
 #include <vector>
 #include <cmath>
@@ -15,370 +13,214 @@
 #include "qcar_visnav/estimation/ekf/ekf_core.h"
 #include "qcar_visnav/estimation/sensors/gyro.h"
 #include "qcar_visnav/estimation/sensors/speed.h"
+#include "qcar_visnav/estimation/utils/odometry_buffer.h"
 
 namespace qcar_nav {
 
 class EkfNode {
 public:
-  EkfNode(ros::NodeHandle& nh, ros::NodeHandle& pnh) : nh_(nh), pnh_(pnh)
-  {
-    // ---- params (all from YAML) ----
-    pnh_.param<std::string>("imu_topic",          imu_topic_,          std::string("/imu"));
-    pnh_.param<std::string>("joint_states_topic", joint_states_topic_, std::string("/qcar/joint_states"));
-    pnh_.param<std::string>("odom_topic",         odom_topic_,         std::string("/qcar/ekf/odom"));
+  // Always 6-state: [vx, vy, r, bg, bax, bay]
+  static constexpr int STATE_SIZE = 6;
+  using SREKF = EkfCore<STATE_SIZE>;
 
-    pnh_.param<std::string>("odom_frame", odom_frame_, std::string("odom"));
-    pnh_.param<std::string>("base_frame", base_frame_, std::string("base_link"));
-    pnh_.param("publish_tf", publish_tf_, true);
+  EkfNode(ros::NodeHandle& nh, ros::NodeHandle& pnh) : nh_(nh), pnh_(pnh) {
+    // Load parameters
+    pnh_.param<std::string>("imu_topic", imu_topic_, "/imu");
+    pnh_.param<std::string>("joint_states_topic", joint_states_topic_, "/qcar/joint_states");
+    pnh_.param<std::string>("odom_topic", odom_topic_, "/qcar/ekf/odom_body");
+    pnh_.param<std::string>("odom_frame", odom_frame_, "odom");
+    pnh_.param<std::string>("base_frame", base_frame_, "base_link");
 
-    pnh_.param("gyro_std",  gyro_std_,  0.05);   // rad/s
-    pnh_.param("speed_std", speed_std_, 0.10);   // m/s
+    pnh_.param("gyro_std", gyro_std_, 0.01);
+    pnh_.param("speed_std", speed_std_, 0.01);
+    pnh_.param("rw", rw_, 0.033);
+    pnh_.param("wheelbase", wheelbase_, 0.258);
+    pnh_.param("dtMaxEst", dtMaxEst_, 0.01);
 
-    pnh_.param("rw", rw_, 0.033);                // wheel radius [m]
-    pnh_.param("dtMaxEst", dtMaxEst_, 0.01);     // dt clamp [s]
-
-    pnh_.param<std::string>("gravity_mode", gravity_mode_, std::string("startup_avg"));
-    pnh_.param("startup_calib_time", startup_calib_time_, 2.5);
-    pnh_.param("imu_lpf_hz", imu_lpf_hz_, 15.0);
-
-    // initial pose
-    double init_x=0.0, init_y=0.0, init_yaw=0.0;
-    pnh_.param("init_x", init_x, 0.0);
-    pnh_.param("init_y", init_y, 0.0);
-    pnh_.param("init_yaw", init_yaw, 0.0);
-
-    // drive wheel joint names
-    {
-      XmlRpc::XmlRpcValue names;
-      if (pnh_.getParam("drive_wheel_joints", names) &&
-          names.getType() == XmlRpc::XmlRpcValue::TypeArray && names.size() >= 1) {
-        for (int i = 0; i < names.size(); ++i)
-          drive_joints_.push_back(static_cast<std::string>(names[i]));
-      } else {
-        // sensible default for your model
-        drive_joints_ = {"wheelfl_motor","wheelfr_motor"};
-      }
+    // Process noise for [vx, vy, r, bg, bax, bay]
+    std::vector<double> q_vals;
+    pnh_.param("q", q_vals, std::vector<double>{2.0, 2.0, 1.0, 0.001, 0.01, 0.01});
+    for (int i = 0; i < 6 && i < q_vals.size(); ++i) {
+      model_params_.q(i) = q_vals[i];
     }
 
-    // process noise q for [X,Y,psi,v,r,bg,ba] (continuous-time variances)
-    {
-      XmlRpc::XmlRpcValue q_list;
-      if (pnh_.getParam("q", q_list) &&
-          q_list.getType() == XmlRpc::XmlRpcValue::TypeArray && q_list.size() == 7) {
-        for (int i=0; i<7; ++i) model_params_.q(i) = static_cast<double>(q_list[i]);
-      } else {
-        model_params_.q << 1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0;
-      }
-    }
-
-    // ---- pubs/subs ----
-    odom_pub_ = nh_.advertise<nav_msgs::Odometry>(odom_topic_, 10);
-    imu_sub_  = nh_.subscribe(imu_topic_, 100, &EkfNode::imuCb, this);
-    js_sub_   = nh_.subscribe(joint_states_topic_, 50, &EkfNode::jointStatesCb, this);
+    // Drive wheel joints
+    drive_joints_ = {"wheelfl_motor", "wheelfr_motor"};
     
-    // Add ground truth subscriber for comparison
-    ground_truth_sub_ = nh_.subscribe("/odom", 1, &EkfNode::groundTruthCb, this);
+    // Publishers/Subscribers
+    odom_pub_ = nh_.advertise<nav_msgs::Odometry>(odom_topic_, 10);
+    imu_sub_ = nh_.subscribe(imu_topic_, 100, &EkfNode::imuCb, this);
+    js_sub_ = nh_.subscribe(joint_states_topic_, 50, &EkfNode::jointStatesCb, this);
+    truth_sub_ = nh_.subscribe("/odom", 1, &EkfNode::truthCb, this);
 
-    // ---- EKF init (from YAML) ----
-    SREKF::Vec mu0 = SREKF::Vec::Zero();
-    mu0(0) = init_x;
-    mu0(1) = init_y;
-    mu0(2) = init_yaw;
-
-    // Choose desired initial *P* on each state, then set S0 = chol(P0):
-    // P0 diag target: [x,   y,   psi,  v,    r,    bg,    ba]
-    const double P0_x   = 1e-2;
-    const double P0_y   = 1e-2;
-    const double P0_psi = 1e-2;
-    const double P0_v   = 0.25;   // <-- big enough so wheels can pull v
-    const double P0_r   = 0.09;   // e.g. (0.3 rad/s)^2
-    const double P0_bg  = 1e-2;
-    const double P0_ba  = 1e-2;
-
+    // EKF Initialization
+    SREKF::Vec mu0 = SREKF::Vec::Zero();  // Start at zero velocity
+    
     SREKF::Mat S0 = SREKF::Mat::Zero();
-    S0(0,0) = std::sqrt(P0_x);
-    S0(1,1) = std::sqrt(P0_y);
-    S0(2,2) = std::sqrt(P0_psi);
-    S0(3,3) = std::sqrt(P0_v);
-    S0(4,4) = std::sqrt(P0_r);
-    S0(5,5) = std::sqrt(P0_bg);
-    S0(6,6) = std::sqrt(P0_ba);
+    S0(0,0) = 0.5;   // vx std
+    S0(1,1) = 0.5;   // vy std  
+    S0(2,2) = 0.3;   // r std
+    S0(3,3) = 0.1;   // bg std
+    S0(4,4) = 0.1;   // bax std
+    S0(5,5) = 0.1;   // bay std
 
-    // IMPORTANT: call setInitial exactly once.
     ekf_.setInitial(mu0, S0);
 
-    // Then params for the dynamics/noise
+    // Model setup
+    model_params_.L = wheelbase_;
+    model_params_.dtMaxEst = dtMaxEst_;
     model_.setParams(model_params_);
 
-    // runtime vars
+    // Runtime variables
     last_imu_stamp_ = ros::Time(0);
-    a_meas_x_lp_ = 0.0;
-    g_x_ = 0.0;
-    calib_done_ = (gravity_mode_ != "startup_avg");
+    odom_buffer_ = std::make_unique<OdometryBuffer>(200);
 
-    // Replace the original ROS_INFO with initialization message
-    ROS_INFO("[EKF] Node initialized - subscribing to %s for ground truth comparison", "/odom");
-    ROS_INFO("[EKF] Config: imu=%s joints=%s odom_out=%s TF=%s init=(%.3f,%.3f,%.3f°)",
-             imu_topic_.c_str(), joint_states_topic_.c_str(), odom_topic_.c_str(),
-             publish_tf_ ? "on":"off", init_x, init_y, init_yaw*180/M_PI);
+    ROS_INFO("[EKF] 6-state velocity EKF initialized: [vx, vy, r, bg, bax, bay]");
   }
 
 private:
-  // Ground truth callback for comparison
-  void groundTruthCb(const nav_msgs::Odometry::ConstPtr& msg) {
-    latest_ground_truth_ = *msg;
-    has_ground_truth_ = true;
-  }
+  ros::NodeHandle nh_, pnh_;
+  ros::Publisher odom_pub_;
+  ros::Subscriber imu_sub_, js_sub_, truth_sub_;
 
-  // State comparison logging function
-  void logStateComparison(const nav_msgs::Odometry& estimate) {
-    if (!has_ground_truth_) return;
-    
-    // Extract true states
-    double true_x = latest_ground_truth_.pose.pose.position.x;
-    double true_y = latest_ground_truth_.pose.pose.position.y;
-    double true_psi = tf::getYaw(latest_ground_truth_.pose.pose.orientation);
-    double true_vx = latest_ground_truth_.twist.twist.linear.x;
-    double true_vy = latest_ground_truth_.twist.twist.linear.y;
-    double true_v = sqrt(true_vx*true_vx + true_vy*true_vy);
-    double true_r = latest_ground_truth_.twist.twist.angular.z;
-    
-    // Extract estimated states
-    double est_x = estimate.pose.pose.position.x;
-    double est_y = estimate.pose.pose.position.y;
-    double est_psi = tf::getYaw(estimate.pose.pose.orientation);
-    double est_v = estimate.twist.twist.linear.x;
-    double est_r = estimate.twist.twist.angular.z;
-    
-    // Get EKF internal states
-    const auto& ekf_state = ekf_.mu();
-    double est_bg = ekf_state(5);  // gyro bias
-    double est_ba = ekf_state(6);  // accel bias
-    
-    // Calculate errors
-    double err_x = est_x - true_x;
-    double err_y = est_y - true_y;
-    double err_psi = est_psi - true_psi;
-    // Wrap angle error to [-pi, pi]
-    while (err_psi > M_PI) err_psi -= 2*M_PI;
-    while (err_psi < -M_PI) err_psi += 2*M_PI;
-    double err_v = est_v - true_v;
-    double err_r = est_r - true_r;
-    double err_pos = sqrt(err_x*err_x + err_y*err_y);
-    
-    // Get covariance trace for uncertainty monitoring
-    Eigen::Matrix<double,7,7> P = ekf_.S().transpose() * ekf_.S();
-    double cov_trace = P.diagonal().sum();
-    
-    ROS_INFO_THROTTLE(1.0, 
-      "[EKF] TRUE: (%.2f,%.2f,%.1f°,%.2f,%.2f) | EST: (%.2f,%.2f,%.1f°,%.2f,%.2f) | ERR: pos=%.3fm hdg=%.1f° | bias: bg=%.3f ba=%.3f | cov_tr=%.3f",
-      true_x, true_y, true_psi*180/M_PI, true_v, true_r,
-      est_x, est_y, est_psi*180/M_PI, est_v, est_r,
-      err_pos, err_psi*180/M_PI, est_bg, est_ba, cov_trace);
-  }
+  std::string imu_topic_, joint_states_topic_, odom_topic_;
+  std::string odom_frame_, base_frame_;
+  std::vector<std::string> drive_joints_;
 
-  // ===================== IMU =====================
-  void imuCb(const sensor_msgs::Imu::ConstPtr& msg)
-  {
+  double gyro_std_, speed_std_, rw_, wheelbase_, dtMaxEst_;
+
+  SREKF ekf_;
+  KinematicModel model_;
+  KinematicModel::ModelParams model_params_;
+  std::unique_ptr<OdometryBuffer> odom_buffer_;
+
+  ros::Time last_imu_stamp_;
+  nav_msgs::Odometry latest_truth_;
+  bool has_truth_ = false;
+
+  void imuCb(const sensor_msgs::Imu::ConstPtr& msg) {
     const ros::Time stamp = msg->header.stamp;
-    double dt = 0.0;
-
+    
     if (last_imu_stamp_.isZero()) {
       last_imu_stamp_ = stamp;
-      return; // need two IMU stamps to get dt
-    } else {
-      dt = (stamp - last_imu_stamp_).toSec();
-      if (dt <= 0.0 || dt > 0.1) dt = dtMaxEst_;
+      return;
     }
 
-    // gravity calibration (startup_avg)
-    if (!calib_done_ && gravity_mode_ == "startup_avg") {
-      if (calib_count_ == 0) calib_start_ = stamp;
-      calib_sum_ax_ += msg->linear_acceleration.x;
-      ++calib_count_;
-      const double elapsed = (stamp - calib_start_).toSec();
-      if (elapsed >= startup_calib_time_) {
-        g_x_ = (calib_count_>0) ? (calib_sum_ax_ / calib_count_) : 0.0;
-        calib_done_ = true;
-        ROS_INFO("[EKF] gravity X calibrated = %.5f m/s^2", g_x_);
-      }
-    }
+    double dt = (stamp - last_imu_stamp_).toSec();
+    if (dt <= 0.0 || dt > 0.1) dt = dtMaxEst_;
 
-    // accel low-pass
-    const double wc = 2.0 * M_PI * std::max(1e-3, imu_lpf_hz_);
-    const double alpha = std::exp(-wc * dt);
-    const double ax_raw = msg->linear_acceleration.x;
-    a_meas_x_lp_ = alpha * a_meas_x_lp_ + (1.0 - alpha) * ax_raw;
-
-    // model input
-    ModelInput u;
-    u.a_meas_x = a_meas_x_lp_;
-    u.g_x      = g_x_;
-    u.dt       = dt;
-
-    // if disabled, don't let accel drive v
-    if (gravity_mode_ == "off") {
-      u.a_meas_x = 0.0;
-      g_x_ = 0.0;
-    }
+    // Simple model input (no acceleration for now to avoid complexity)
+    KinematicModel::ModelInput u;
+    u.a_meas_x = 0.0;  // Disabled for simplicity
+    u.a_meas_y = 0.0;
+    u.delta = 0.0;     // No steering input for now
+    u.dt = dt;
     model_.setInput(u);
 
-    // predict
+    // Predict
     ekf_.predict(model_, stamp.toSec(), dt);
 
-    double wz = msg->angular_velocity.z;
-    ROS_INFO_THROTTLE(1.0, "[DEBUG] wz_raw=%.4f, r_est=%.4f, bg=%.6f, innovation=%.4f", 
-                      wz, ekf_.mu()(4), ekf_.mu()(5), wz - (ekf_.mu()(4) + ekf_.mu()(5)));
+    // Gyro update
+    GyroMeas gyro;
+    GyroMeas::ZVec z, h;
+    GyroMeas::HVec H;
+    gyro.predict(ekf_.mu(), model_params_, h, H);
 
-    // gyro Z update (r + bg)
-    {
-      GyroMeas gyro;
-      GyroMeas::ZVec z, h;
-      GyroMeas::HVec H;
-      gyro.predict(ekf_.mu(), model_params_, h, H);
+    z(0) = msg->angular_velocity.z;
+    Eigen::Matrix<double,1,1> sqrtR;
+    sqrtR(0) = gyro_std_;
+    ekf_.update(z, h, H, sqrtR);
 
-      double wz = msg->angular_velocity.z;   // rad/s
-      z(0,0) = wz;
-
-      Eigen::Matrix<double,1,1> sqrtR;
-      sqrtR(0,0) = gyro_std_;
-      ekf_.update(z, h, H, sqrtR);
-    }
-
-    // publish
     publishOdom(stamp);
     last_imu_stamp_ = stamp;
   }
 
-  // ===================== Wheels =====================
-  void jointStatesCb(const sensor_msgs::JointState::ConstPtr& msg)
-  {
-    double w_sum_abs = 0.0; 
+  void jointStatesCb(const sensor_msgs::JointState::ConstPtr& msg) {
+    double w_sum = 0.0;
     int cnt = 0;
 
     for (size_t i = 0; i < msg->name.size(); ++i) {
-      const std::string& j = msg->name[i];
-      if (j == "wheelfl_motor" || j == "wheelfr_motor") {     // exact names
+      const std::string& name = msg->name[i];
+      if (std::find(drive_joints_.begin(), drive_joints_.end(), name) != drive_joints_.end()) {
         if (i < msg->velocity.size()) {
-          w_sum_abs += std::fabs(msg->velocity[i]);           // <-- use ABS
-          ++cnt;
+          w_sum += std::abs(msg->velocity[i]);
+          cnt++;
         }
       }
     }
+
     if (cnt < 1) return;
 
-    const double w_avg = w_sum_abs / static_cast<double>(cnt); // rad/s (magnitude)
-    const double v_meas = w_avg * rw_;                         // m/s
-    // Build meas
-    SpeedMeas spd; SpeedMeas::ZVec z, h; SpeedMeas::HVec H;
-    spd.predict(ekf_.mu(), model_params_, h, H);
-    z(0,0) = v_meas;
+    double v_meas = (w_sum / cnt) * rw_;
 
-    // DEBUG — before update
-    double v_before = ekf_.mu()(3);
-    double innov    = (z - h)(0,0);
+    // Speed update
+    SpeedMeas speed;
+    SpeedMeas::ZVec z, h;
+    SpeedMeas::HVec H;
+    speed.predict(ekf_.mu(), model_params_, h, H);
 
-    Eigen::Matrix<double,1,1> sqrtR; sqrtR(0,0) = speed_std_;
+    z(0) = v_meas;
+    Eigen::Matrix<double,1,1> sqrtR;
+    sqrtR(0) = speed_std_;
     ekf_.update(z, h, H, sqrtR);
-
-    // // DEBUG — after update
-    // double v_after = ekf_.mu()(3);
-    // ROS_INFO_THROTTLE(0.5,
-    //   "[EKF] speed meas: z=%.3f h=%.3f innov=%.3f  v: before=%.3f after=%.3f  R=%.4f",
-    //   v_meas, h(0,0), innov, v_before, v_after, speed_std_);
-
-    // Eigen::Matrix<double,7,7> P = ekf_.S().transpose() * ekf_.S();
-    // ROS_INFO_THROTTLE(0.5, "[EKF] Pvv=%.6f  (should be ~1e-2 .. 1e+0 initially)", P(3,3));
   }
 
-  // ===================== Odom out =====================
-  void publishOdom(const ros::Time& stamp)
-  {
+  void truthCb(const nav_msgs::Odometry::ConstPtr& msg) {
+    latest_truth_ = *msg;
+    has_truth_ = true;
+  }
+
+  void publishOdom(const ros::Time& stamp) {
     const auto& x = ekf_.mu();
-    const double X=x(0), Y=x(1), psi=x(2), v=x(3), r=x(4);
 
     nav_msgs::Odometry odom;
     odom.header.stamp = stamp;
     odom.header.frame_id = odom_frame_;
-    odom.child_frame_id  = base_frame_;
+    odom.child_frame_id = base_frame_;
 
-    odom.pose.pose.position.x = X;
-    odom.pose.pose.position.y = Y;
+    // No position (velocity-only EKF)
+    odom.pose.pose.position.x = 0.0;
+    odom.pose.pose.position.y = 0.0;
     odom.pose.pose.position.z = 0.0;
+    odom.pose.pose.orientation = tf::createQuaternionMsgFromYaw(0.0);
 
-    geometry_msgs::Quaternion q = tf::createQuaternionMsgFromYaw(psi);
-    odom.pose.pose.orientation = q;
+    // Body-frame velocities
+    odom.twist.twist.linear.x = x(0);   // vx
+    odom.twist.twist.linear.y = x(1);   // vy
+    odom.twist.twist.angular.z = x(2);  // r
 
-    odom.twist.twist.linear.x  = v;
-    odom.twist.twist.angular.z = r;
-
-    // diag covariances from P
-    Eigen::Matrix<double,7,7> P = ekf_.S().transpose() * ekf_.S();
-    odom.pose.covariance[0]  = P(0,0);
-    odom.pose.covariance[7]  = P(1,1);
-    odom.pose.covariance[35] = P(2,2);
-    odom.twist.covariance[0]  = P(3,3);
-    odom.twist.covariance[35] = P(4,4);
+    // Simple covariance
+    auto P = ekf_.getCovariance();
+    odom.twist.covariance[0] = P(0,0);   // vx variance
+    odom.twist.covariance[7] = P(1,1);   // vy variance
+    odom.twist.covariance[35] = P(2,2);  // r variance
 
     odom_pub_.publish(odom);
+    odom_buffer_->addEntry(odom);
 
-    // Log state comparison
-    logStateComparison(odom);
-
-    if (publish_tf_) {
-      geometry_msgs::TransformStamped tf_msg;
-      tf_msg.header.stamp = stamp;
-      tf_msg.header.frame_id = odom_frame_;
-      tf_msg.child_frame_id  = base_frame_;
-      tf_msg.transform.translation.x = X;
-      tf_msg.transform.translation.y = Y;
-      tf_msg.transform.translation.z = 0.0;
-      tf_msg.transform.rotation = q;
-      tf_broadcaster_.sendTransform(tf_msg);
+    // Log comparison
+    if (has_truth_) {
+      double true_vx = latest_truth_.twist.twist.linear.x;
+      double true_r = latest_truth_.twist.twist.angular.z;
+      double err_vx = x(0) - true_vx;
+      double err_r = x(2) - true_r;
+      
+      ROS_INFO_THROTTLE(1.0, "[EKF] TRUE: vx=%.2f r=%.2f | EST: vx=%.2f r=%.2f | ERR: vx=%.3f r=%.1f° | bias: bg=%.3f",
+                        true_vx, true_r, x(0), x(2), err_vx, err_r*180/M_PI, x(3));
     }
   }
-
-  // -------- members --------
-  ros::NodeHandle nh_, pnh_;
-  ros::Subscriber imu_sub_, js_sub_, ground_truth_sub_;
-  ros::Publisher  odom_pub_;
-  tf::TransformBroadcaster tf_broadcaster_;
-
-  // params
-  std::string imu_topic_, joint_states_topic_, odom_topic_;
-  std::string odom_frame_, base_frame_, gravity_mode_;
-  std::vector<std::string> drive_joints_;
-  bool publish_tf_{true};
-  double gyro_std_{0.05}, speed_std_{0.10};
-  double rw_{0.033}, dtMaxEst_{0.01};
-  double startup_calib_time_{2.5}, imu_lpf_hz_{15.0};
-
-  // model / ekf
-  ModelParams model_params_;
-  KinematicModel model_;
-  SREKF ekf_;
-
-  // runtime
-  ros::Time last_imu_stamp_;
-  bool   calib_done_{false};
-  ros::Time calib_start_;
-  double calib_sum_ax_{0.0};
-  int    calib_count_{0};
-  double g_x_{0.0};
-  double a_meas_x_lp_{0.0};
-
-  // State comparison members
-  nav_msgs::Odometry latest_ground_truth_;
-  bool has_ground_truth_{false};
 };
 
 } // namespace qcar_nav
 
-int main(int argc, char** argv)
-{
-  ros::init(argc, argv, "qcar_ekf");
+int main(int argc, char** argv) {
+  ros::init(argc, argv, "velocity_ekf_node");
   ros::NodeHandle nh, pnh("~");
-  qcar_nav::EkfNode node(nh, pnh);
+  
+  qcar_nav::EkfNode ekf_node(nh, pnh);
+  
+  ROS_INFO("[EKF] Simple velocity EKF node started");
   ros::spin();
+  
   return 0;
 }

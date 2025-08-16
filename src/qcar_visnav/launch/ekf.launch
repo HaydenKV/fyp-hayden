@@ -1,16 +1,28 @@
 <launch>
-  <!-- Load all EKF params (frames, Q/R, geometry, topics) -->
+  <!-- Velocity-based EKF Launch File -->
+  
+  <!-- Load EKF configuration -->
   <rosparam file="$(find qcar_visnav)/config/ekf.yaml" command="load"/>
 
-  <!-- Start the EKF node -->
+  <!-- Start the velocity EKF node -->
   <node pkg="qcar_visnav"
         type="ekf_node"
-        name="qcar_ekf"
+        name="velocity_ekf"
         output="screen">
 
-    <!-- If your joint states are namespaced by controllers, feed them to the EKF -->
-    <!-- Remove this remap if your joint states are plain /joint_states -->
+    <!-- Remap topics if needed -->
     <remap from="/joint_states" to="/qcar/joint_states"/>
+    
+    <!-- Optional: remap IMU topic if different -->
+    <!-- <remap from="/imu" to="/qcar/imu/data"/> -->
+    
+    <!-- Optional: remap steering topic if available -->
+    <!-- <remap from="/steering/angle" to="/qcar/steering/angle"/> -->
 
   </node>
+
+  <!-- Optional: Publish static transform for visualization -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="base_link_to_imu"
+        args="0 0 0.16 0 0 0 base_link imu_link" />
+
 </launch>
