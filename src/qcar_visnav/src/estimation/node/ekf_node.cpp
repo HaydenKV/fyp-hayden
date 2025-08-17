@@ -3,6 +3,7 @@
 #include <sensor_msgs/JointState.h>
 #include <nav_msgs/Odometry.h>
 #include <tf/transform_datatypes.h>
+#include <algorithm>
 
 #include <Eigen/Dense>
 #include <string>
@@ -27,20 +28,20 @@ public:
     // Load parameters
     pnh_.param<std::string>("imu_topic", imu_topic_, "/imu");
     pnh_.param<std::string>("joint_states_topic", joint_states_topic_, "/qcar/joint_states");
-    pnh_.param<std::string>("odom_topic", odom_topic_, "/qcar/ekf/odom_body");
+    pnh_.param<std::string>("odom_topic", odom_topic_, "/qcar/ekf/odom");
     pnh_.param<std::string>("odom_frame", odom_frame_, "odom");
     pnh_.param<std::string>("base_frame", base_frame_, "base_link");
 
-    pnh_.param("gyro_std", gyro_std_, 0.01);
-    pnh_.param("speed_std", speed_std_, 0.01);
+    pnh_.param("gyro_std", gyro_std_, 1.0);
+    pnh_.param("speed_std", speed_std_, 0.1);
     pnh_.param("rw", rw_, 0.033);
     pnh_.param("wheelbase", wheelbase_, 0.258);
     pnh_.param("dtMaxEst", dtMaxEst_, 0.01);
 
-    // Process noise for [vx, vy, r, bg, bax, bay]
+    // Process noise for [vx, vy, r, bg, bax, bay] (continuous-time intensities)
     std::vector<double> q_vals;
     pnh_.param("q", q_vals, std::vector<double>{2.0, 2.0, 1.0, 0.001, 0.01, 0.01});
-    for (int i = 0; i < 6 && i < q_vals.size(); ++i) {
+    for (int i = 0; i < 6 && i < static_cast<int>(q_vals.size()); ++i) {
       model_params_.q(i) = q_vals[i];
     }
 
@@ -53,19 +54,28 @@ public:
     js_sub_ = nh_.subscribe(joint_states_topic_, 50, &EkfNode::jointStatesCb, this);
     truth_sub_ = nh_.subscribe("/odom", 1, &EkfNode::truthCb, this);
 
-    // EKF Initialization
-    SREKF::Vec mu0 = SREKF::Vec::Zero();  // Start at zero velocity
+    //-------------------------------------------------
+    // --- Initial conditions from YAML ---
+    std::vector<double> init_x, init_Pdiag;
+    if (!pnh_.getParam("initial_state", init_x) || init_x.size() != STATE_SIZE) {
+      ROS_WARN("[EKF] 'initial_state' missing/size!=6; defaulting to zeros");
+      init_x.assign(STATE_SIZE, 0.0);
+    }
+    if (!pnh_.getParam("initial_cov_diag", init_Pdiag) || init_Pdiag.size() != STATE_SIZE) {
+      ROS_WARN("[EKF] 'initial_cov_diag' missing/size!=6; defaulting to 0.1 diag");
+      init_Pdiag.assign(STATE_SIZE, 0.1);
+    }
+
+    // EKF Initialization (from YAML)
+    SREKF::Vec mu0 = SREKF::Vec::Zero(); // Start at zero velocity
+    for (int i = 0; i < STATE_SIZE; ++i) mu0(i) = init_x[i]; // This replaces zeros to YAML values
+
+    SREKF::Mat P0 = SREKF::Mat::Zero();
+    for (int i = 0; i < STATE_SIZE; ++i) P0(i,i) = init_Pdiag[i]; // This replaces zeros to YAML values
+    ekf_.setInitial(mu0, P0); 
+
     
-    SREKF::Mat S0 = SREKF::Mat::Zero();
-    S0(0,0) = 0.5;   // vx std
-    S0(1,1) = 0.5;   // vy std  
-    S0(2,2) = 0.3;   // r std
-    S0(3,3) = 0.1;   // bg std
-    S0(4,4) = 0.1;   // bax std
-    S0(5,5) = 0.1;   // bay std
-
-    ekf_.setInitial(mu0, S0);
-
+    //-------------------------------------------------
     // Model setup
     model_params_.L = wheelbase_;
     model_params_.dtMaxEst = dtMaxEst_;
@@ -107,9 +117,10 @@ private:
     }
 
     double dt = (stamp - last_imu_stamp_).toSec();
-    if (dt <= 0.0 || dt > 0.1) dt = dtMaxEst_;
+    if (dt <= 0.0 || dt > dtMaxEst_) dt = dtMaxEst_;
 
     // Simple model input (no acceleration for now to avoid complexity)
+    // Set inputs here ----------------------------------------------------------- add accel when working
     KinematicModel::ModelInput u;
     u.a_meas_x = 0.0;  // Disabled for simplicity
     u.a_meas_y = 0.0;
@@ -128,7 +139,7 @@ private:
 
     z(0) = msg->angular_velocity.z;
     Eigen::Matrix<double,1,1> sqrtR;
-    sqrtR(0) = gyro_std_;
+    sqrtR(0) = gyro_std_; // std -> squared inside update()
     ekf_.update(z, h, H, sqrtR);
 
     publishOdom(stamp);
@@ -161,7 +172,7 @@ private:
 
     z(0) = v_meas;
     Eigen::Matrix<double,1,1> sqrtR;
-    sqrtR(0) = speed_std_;
+    sqrtR(0) = speed_std_; // std -> squared inside update()
     ekf_.update(z, h, H, sqrtR);
   }
 
@@ -204,9 +215,13 @@ private:
       double true_r = latest_truth_.twist.twist.angular.z;
       double err_vx = x(0) - true_vx;
       double err_r = x(2) - true_r;
-      
-      ROS_INFO_THROTTLE(1.0, "[EKF] TRUE: vx=%.2f r=%.2f | EST: vx=%.2f r=%.2f | ERR: vx=%.3f r=%.1f° | bias: bg=%.3f",
-                        true_vx, true_r, x(0), x(2), err_vx, err_r*180/M_PI, x(3));
+      (void)err_vx; (void)err_r; (void)true_vx; (void)true_r;
+      // ROS_INFO_THROTTLE(1.0, 
+      //       "[EKF] TRUE: vx=%.2f r=%.2f | EST: vx=%.2f r=%.2f | ERR: vx=%.3f r=%.1f° | bias: bg=%.3f",
+      //       true_vx,     true_r,           // Ground truth
+      //       x(0),        x(2),             // EKF estimates  
+      //       err_vx,      err_r*180/M_PI,   // Errors (r converted to degrees)
+      //       x(3));                         // Gyro bias estimate
     }
   }
 };

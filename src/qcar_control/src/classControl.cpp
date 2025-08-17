@@ -94,12 +94,12 @@ void classControl::navCallback(const nav_msgs::Odometry::ConstPtr& msg)
 
 void classControl::navEKFCallback(const nav_msgs::Odometry::ConstPtr& msg)
 {
-    //qcarStates.Vel = msg->twist.twist.linear.x;
-	qcarStates.Vel = sqrt(pow(msg->twist.twist.linear.x,2) + pow(msg->twist.twist.linear.y,2)); //magnitude
+    qcarStates.Vel = msg->twist.twist.linear.x;
+	//qcarStates.Vel = sqrt(pow(msg->twist.twist.linear.x,2) + pow(msg->twist.twist.linear.y,2)); //magnitude
 
-    ROS_INFO_THROTTLE(1.0, "[control] Velocities: truth=%.3f  ekf=%.3f",
-                    qcarStates.VelTruth,
-                    qcarStates.Vel);
+    // ROS_INFO_THROTTLE(1.0, "[control] Velocities: truth=%.3f  ekf=%.3f",
+    //                 qcarStates.VelTruth,
+    //                 qcarStates.Vel);
 
     got_ekf_ = true;
 }

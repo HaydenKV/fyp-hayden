@@ -72,6 +72,6 @@ install(DIRECTORY config/
 
 # Install Python scripts
 catkin_install_python(PROGRAMS
-  scripts/simple_motion_test.py
+  scripts/simple_forward_backward_test.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

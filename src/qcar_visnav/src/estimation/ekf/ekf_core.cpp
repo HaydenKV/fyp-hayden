@@ -9,26 +9,54 @@ template<int STATE_SIZE>
 EkfCore<STATE_SIZE>::EkfCore() {
   mu_.setZero();
   S_.setIdentity();
-  S_ *= 0.1;  // Small initial uncertainty
+  S_ *= 0.1;  // Small initial uncertainty (overridden by setInitial)
 }
 
 template<int STATE_SIZE>
-void EkfCore<STATE_SIZE>::setInitial(const Vec& mu0, const Mat& S0) {
+void EkfCore<STATE_SIZE>::setInitial(const Vec& mu0, const Mat& P0_in) {
   mu_ = mu0;
-  S_ = S0;
+
+  // Make symmetric & clamp tiny negatives (robust to rounding)
+  Mat P0 = regularizeCovariance(P0_in);
+
+  // Try Cholesky (SPD expected)
+  Eigen::LLT<Mat> llt(P0);
+  if (llt.info() == Eigen::Success) {
+    S_ = llt.matrixU();  // Upper-triangular so that P0 = S^T S
+    return;
+  }
+
+  // Fallback: eigen factorization (handles PSD)
+  Eigen::SelfAdjointEigenSolver<Mat> eig(P0);
+  if (eig.info() == Eigen::Success) {
+    auto evals = eig.eigenvalues().array().max(1e-12); // jitter
+    Mat sqrt_lambda = evals.sqrt().matrix().asDiagonal();
+    S_ = eig.eigenvectors() * sqrt_lambda;            // not guaranteed upper-triangular but OK
+    return;
+  }
+
+  // Last resort
+  S_.setIdentity();
+  S_ *= 0.1;
 }
+
 
 template<int STATE_SIZE>
 void EkfCore<STATE_SIZE>::predict(const KinematicModel& model, double t, double dt) {
+  // 1. Propagate state: x_pred = f(x_prev, u, dt)
+  // 2. Compute Jacobians: F = ∂f/∂x, G = ∂f/∂u  
+  // 3. Update covariance: P⁻ = F*P*Fᵀ + G*Qu*Gᵀ + Qx
+  // 4. Maintain square-root form: S where P = SᵀS
+
   // 1. Predict state using kinematic model
   auto x_pred = model.predict(mu_, t, dt);
 
   // 2. Compute Jacobians - these return the correct 6x6 and 6x3 matrices
-  auto F = model.getProcessJacobian(mu_, dt);        // 6x6
+  auto F = model.getProcessJacobian(mu_, dt);        // 6x6 
   auto G = model.getInputJacobian(mu_, dt);          // 6x3
 
-  // 3. Compute noise covariances
-  auto Qx = model.getProcessNoise(dt);               // 6x6
+  // 3. Compute noise covariances (discrete for this step)
+  auto Qx = model.getProcessNoise(dt);               // 6x6 (built from YAML q * dt)
   auto Qu = model.getInputNoise(dt);                 // 3x3
 
   // 4. Propagate covariance: P^- = F*P*F^T + G*Qu*G^T + Qx
@@ -75,7 +103,7 @@ void EkfCore<STATE_SIZE>::update(const Eigen::VectorXd& z,
   Eigen::VectorXd y = z - h;
 
   // 3. Innovation covariance
-  Eigen::MatrixXd R = sqrtR.transpose() * sqrtR;
+  Eigen::MatrixXd R = sqrtR.transpose() * sqrtR; // (std)^2
   Eigen::MatrixXd S_innov = H * P * H.transpose() + R;
 
   // 4. Kalman gain

@@ -1,0 +1,87 @@
+<launch>
+  <!-- Simple Forward/Backward EKF Validation Launch -->
+  
+  <!-- Set initial robot pose -->
+  <arg name="x" default="-4.3"/>
+  <arg name="y" default="3"/>
+  <arg name="z" default="0"/>
+  <arg name="roll" default="0"/>
+  <arg name="pitch" default="0"/>
+  <arg name="yaw" default="-3.14"/>
+  
+  <!-- Simple test parameters - INCREASED for visibility -->
+  <arg name="forward_omega" default="8.0" doc="Forward wheel velocity (rad/s)"/>
+  <arg name="backward_omega" default="-6.0" doc="Backward wheel velocity (rad/s)"/>
+  <arg name="phase_duration" default="5.0" doc="Duration for each motion phase (seconds)"/>
+  <arg name="enable_plotting" default="true" doc="Enable matplotlib plotting"/>
+  <arg name="log_to_csv" default="true" doc="Log data to CSV file"/>
+
+  <!-- Send the URDF file to the ROS parameter server -->
+  <param name="robot_description" command="$(find xacro)/xacro $(find qcar_gazebo)/urdf/qcar_model.xacro" />
+  
+  <!-- Load control plugin configuration -->
+  <rosparam file="$(find qcar_controlplugin)/config/qcar_controlplugin.yaml" command="load"/>
+  
+  <!-- Setup the joint state publisher to publish the state of the robot -->
+  <node name="joint_state_publisher" pkg="joint_state_publisher" type="joint_state_publisher"/>
+  
+  <!-- Convert the robot joint states to TF transforms for visualisation in rviz -->
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher"
+        respawn="false" output="screen">
+    <remap from="/joint_states" to="/qcar/joint_states" />
+  </node>
+  
+  <!-- Launch the Gazebo World -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">     
+    <arg name="world_name" value="$(find qcar_gazebo)/worlds/Track1.world"/>     
+    <arg name="gui" value="true"/> 
+    <arg name="verbose" value="false" />  
+  </include> 
+  
+  <!-- Spawn the qcar -->
+  <node name="spawn_qcar" pkg="gazebo_ros" type="spawn_model" output="screen" 
+    args="-urdf -param robot_description -model qcar
+          -x $(arg x) -y $(arg y) -z $(arg z)
+          -R $(arg roll) -P $(arg pitch) -Y $(arg yaw)"/>
+  
+  <!-- Spawn the various controllers -->
+  <node name="controller_spawner" pkg="controller_manager" type="spawner" respawn="false"
+    output="screen" ns="/qcar" args="base_fr_controller base_fl_controller joint_state_controller"/>
+
+  <!-- ================= VELOCITY EKF NODE ================= -->
+  <!-- Start the velocity EKF node -->
+  <node pkg="qcar_visnav"
+        type="ekf_node"
+        name="velocity_ekf"
+        output="screen">
+    <!-- Load EKF configuration into node's private namespace -->
+    <rosparam file="$(find qcar_visnav)/config/ekf.yaml" command="load"/>
+    <remap from="/joint_states" to="/qcar/joint_states"/>
+  </node>
+  <!-- ======================================================= -->
+
+  <!-- ================= SIMPLE VALIDATION TEST ================= -->
+  <!-- Simple forward/backward motion test -->
+  <node pkg="qcar_visnav" 
+        type="simple_forward_backward_test.py" 
+        name="simple_ekf_test" 
+        output="screen">
+    
+    <!-- Test parameters -->
+    <param name="forward_omega" value="$(arg forward_omega)"/>
+    <param name="backward_omega" value="$(arg backward_omega)"/>
+    <param name="phase_duration" value="$(arg phase_duration)"/>
+    <param name="enable_plotting" value="$(arg enable_plotting)"/>
+    <param name="log_to_csv" value="$(arg log_to_csv)"/>
+    <param name="csv_file" value="/tmp/simple_ekf_test.csv"/>
+    
+  </node>
+  <!-- ========================================================= -->
+
+  <!-- Optional: RQT plot for real-time monitoring -->
+  <group if="false"> <!-- Set to true to enable -->
+    <node pkg="rqt_plot" type="rqt_plot" name="velocity_plot" 
+          args="/qcar/ekf/odom/twist/twist/linear/x:label=EKF /odom/twist/twist/linear/x:label=Truth" />
+  </group>
+
+</launch>

@@ -59,7 +59,17 @@ int main(int argc, char **argv)
 
 				delta = uHead;
 
-                omega = qcarController.getVel()/0.033;
+                const float v_ref  = qcarController.getVel();                 // guidance
+                const float v_ekf  = qcarController.getStates()->Vel;         // EKF magnitude
+                const float v_true = qcarController.getStates()->VelTruth;    // truth magnitude
+
+                ROS_INFO_THROTTLE(0.5,
+                "[VAL] v_ref=%.2f | v_ekf=%.2f | v_truth=%.2f | "
+                "error=%.2f ",
+                (double)v_ref, (double)v_ekf, (double)v_true,
+                (double)(v_true - v_ekf));
+
+                omega = v_ref/0.033;
 
                 qcarController.command(omega, delta);
 

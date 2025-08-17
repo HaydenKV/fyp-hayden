@@ -1,23 +1,55 @@
-# Minimal 6-State Velocity EKF Configuration
-# State: [vx, vy, r, bg, bax, bay]
+# ============================
+# Minimal 6-State Velocity EKF
+# State order: [vx, vy, r, bg, bax, bay]
+#   vx, vy : body-frame linear velocities (m/s)
+#   r      : yaw rate (rad/s)
+#   bg     : gyro z bias (rad/s)
+#   bax,bay: accel biases (m/s^2)
+# ============================
 
-# Topics
-imu_topic: "/imu"
-joint_states_topic: "/qcar/joint_states"
-odom_topic: "/qcar/ekf/odom"
+# --- ROS topics ---
+imu_topic: "/imu"                     # sensor_msgs/Imu (uses angular_velocity.z)
+joint_states_topic: "/qcar/joint_states"   # sensor_msgs/JointState (for drive wheel speeds)
+odom_topic: "/qcar/ekf/odom"          # nav_msgs/Odometry output from EKF
 
-# Frames
+# --- Frames ---
 odom_frame: "odom"
 base_frame: "base_link"
 
-# Measurement noise (standard deviations)
-gyro_std: 0.01    # Gyro noise (rad/s)
-speed_std: 0.01   # Speed measurement noise (m/s)
+# --- Vehicle / time settings ---
+wheelbase: 0.258    # [m] QCar wheelbase
+rw: 0.033           # [m] Wheel radius (used to convert wheel ω -> m/s)
+dtMaxEst: 0.01      # [s] Max time step used by the filter (clamps IMU dt for stability)
 
-# Vehicle parameters
-wheelbase: 0.258  # QCar wheelbase (m)
-rw: 0.033        # Wheel radius (m)
-dtMaxEst: 0.01   # Max time step (s)
+# --- Measurement noise (standard deviations) ---
+# These are *std devs*. The code squares them internally to form R.
+gyro_std: 0.05      # [rad/s] gyro yaw-rate noise (≈ 2.9°/s). If you truly want 1°/s, use 0.01745
+speed_std: 0.10     # [m/s]   wheel-speed-derived longitudinal speed noise
 
-# Process noise for [vx, vy, r, bg, bax, bay]
-q: [2.0, 2.0, 1.0, 0.001, 0.01, 0.01]
+# --- Process noise (continuous-time intensities) ---
+# Interpreted as random-walk *intensities*; the model discretizes as: Qk = diag(q) * dt.
+# Tuning tip:
+#   - Increase q for states that lag or need to adapt faster.
+#   - Decrease q if the estimate is too jittery.
+# Units:
+#   q(vx), q(vy)      in (m^2/s^3)
+#   q(r), q(bg)       in (rad^2/s^3)
+#   q(bax), q(bay)    in ((m/s^2)^2 / s)
+q: [0.2, 0.02, 0.05, 1.0e-5, 5.0e-4, 5.0e-4]
+
+# --- Initial conditions ---
+# Initial state mean (body at rest, zero biases by default).
+# Change if you know better startup conditions.
+initial_state: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # [vx0, vy0, r0, bg0, bax0, bay0]
+
+# Initial covariance *diagonal* (these are VARIANCES, not std devs!)
+# Tuning tip:
+#   - Larger variance = “less certain” at startup -> measurements will correct faster.
+#   - Biases often benefit from larger initial variances so they converge quickly.
+# Suggested conservative defaults below:
+#   vx,vy: (0.5 m/s)^2 = 0.25
+#   r    : (5°/s)^2    = (0.0873 rad/s)^2 ≈ 0.0076
+#   bg   : (3°/s)^2    = (0.0524 rad/s)^2 ≈ 0.0027
+#   bax,y: (0.3 m/s^2)^2 = 0.09
+initial_cov_diag: [0.25, 0.25, 0.0076, 0.0027, 0.09, 0.09]
+

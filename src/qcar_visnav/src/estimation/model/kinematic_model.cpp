@@ -48,7 +48,7 @@ KinematicModel::StateVec KinematicModel::stateDot(const StateVec& x, const Input
   // Yaw rate from bicycle model
   x_dot(2) = (vx / params_.L) * std::tan(delta);  // r_dot
   
-  // Bias random walks
+  // Bias random walks (0 drift; noise added via Q)
   x_dot(3) = 0.0;  // bg_dot (driven by process noise)
   x_dot(4) = 0.0;  // bax_dot (driven by process noise)
   x_dot(5) = 0.0;  // bay_dot (driven by process noise)
@@ -130,18 +130,14 @@ KinematicModel::InputMat KinematicModel::getInputJacobian(const StateVec& x, dou
 KinematicModel::StateMat KinematicModel::getProcessNoise(double dt) const {
   StateMat Q = StateMat::Zero();
   
-  // Process noise only affects bias random walks
-  // Q(i,i) = (sigma_i * sqrt(dt))^2 for random walk processes
-  
-  // Velocity process noise (small, mainly driven by inputs)
-  Q(0, 0) = std::pow(params_.q(0) * std::sqrt(dt), 2);  // vx process noise
-  Q(1, 1) = std::pow(params_.q(1) * std::sqrt(dt), 2);  // vy process noise
-  Q(2, 2) = std::pow(params_.q(2) * std::sqrt(dt), 2);  // r process noise
-  
-  // Bias random walks
-  Q(3, 3) = std::pow(params_.q(3) * std::sqrt(dt), 2);  // bg random walk
-  Q(4, 4) = std::pow(params_.q(4) * std::sqrt(dt), 2);  // bax random walk
-  Q(5, 5) = std::pow(params_.q(5) * std::sqrt(dt), 2);  // bay random walk
+  // Interpret params_.q as continuous-time random-walk *intensities*
+  // Discretization for one step: Qk = diag(q) * dt
+  Q(0, 0) = params_.q(0) * dt;  // vx process noise
+  Q(1, 1) = params_.q(1) * dt;  // vy process noise
+  Q(2, 2) = params_.q(2) * dt;  // r  process noise
+  Q(3, 3) = params_.q(3) * dt;  // bg random walk
+  Q(4, 4) = params_.q(4) * dt;  // bax random walk
+  Q(5, 5) = params_.q(5) * dt;  // bay random walk
   
   return Q;
 }
@@ -179,9 +175,9 @@ void KinematicModel::processNoise(double dt, Eigen::Vector3d& sqrtQc,
                                  Eigen::Matrix<double, STATE_SIZE, 3>& L) const {
   // Legacy interface: return subset of process noise for RK4SDE
   // RK4SDE expects 3D noise for bias states [bg, bax, bay]
-  sqrtQc(0) = params_.q(3) * std::sqrt(dt);  // bg
-  sqrtQc(1) = params_.q(4) * std::sqrt(dt);  // bax  
-  sqrtQc(2) = params_.q(5) * std::sqrt(dt);  // bay
+  sqrtQc(0) = std::sqrt(params_.q(3) * dt);  // bg
+  sqrtQc(1) = std::sqrt(params_.q(4) * dt);  // bax
+  sqrtQc(2) = std::sqrt(params_.q(5) * dt);  // bay
   
   // Distribution matrix L maps 3D noise to full state space
   L.setZero();
