@@ -18,6 +18,7 @@ struct States
         float East;
         float Psi;
         float Vel;
+        float VelTruth;
 };
 
 class classControl
@@ -41,7 +42,10 @@ class classControl
         // private member variables
         ros::NodeHandle* n;
         ros::Subscriber subGuid;
+
         ros::Subscriber subNav;
+        ros::Subscriber subNavEKF;
+
         ros::Publisher pubCmdRl;
         ros::Publisher pubCmdRr;
         ros::Publisher pubCmdFl;
@@ -60,11 +64,17 @@ class classControl
 
         struct States qcarStates;
 
+        bool got_truth_{false};
+        bool got_ekf_{false};
+
         // private functions
         void init_guidSub();
         void guidCallback(const qcar_control::TrajectoryMessage::ConstPtr&);
         void init_navSub();
+
         void navCallback(const nav_msgs::Odometry::ConstPtr& msg);
+        void navEKFCallback(const nav_msgs::Odometry::ConstPtr& msg);
+
         float quat_to_rad(float, float, float, float);
         void init_cmdPub();
 

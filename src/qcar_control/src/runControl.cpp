@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <vector>
 #include <math.h>
+#include <iomanip>
 
 #include "classControl.h"
 
@@ -58,7 +59,17 @@ int main(int argc, char **argv)
 
 				delta = uHead;
 
-                omega = qcarController.getVel()/0.033;
+                const float v_ref  = qcarController.getVel();                 // guidance
+                const float v_ekf  = qcarController.getStates()->Vel;         // EKF magnitude
+                const float v_true = qcarController.getStates()->VelTruth;    // truth magnitude
+
+                ROS_INFO_THROTTLE(0.5,
+                "[VAL] v_ref=%.4f | v_ekf=%.4f | v_truth=%.4f | "
+                "error=%.4f ",
+                (double)v_ref, (double)v_ekf, (double)v_true,
+                (double)(v_true - v_ekf));
+
+                omega = v_ref/0.033;
 
                 qcarController.command(omega, delta);
 
@@ -67,10 +78,10 @@ int main(int argc, char **argv)
                 ros::spinOnce();
                 loop_rate.sleep();
 
-                std::cout << "[Control_Node]" << std::endl;
-                std::cout << "[time]: " << std::fixed << std::setprecision(2) << time*1e-2 << " secs\n";
-                std::cout << "[omga]: " << std::fixed << std::setprecision(2) << omega << " rad/s\n";
-                std::cout << "[dlta]: " << std::fixed << std::setprecision(2) << delta*180.0/M_PI << " deg\n\n\n";
+                // std::cout << "[Control_Node]" << std::endl;
+                // std::cout << "[time]: " << std::fixed << std::setprecision(2) << time*1e-2 << " secs\n";
+                // std::cout << "[omga]: " << std::fixed << std::setprecision(2) << omega << " rad/s\n";
+                // std::cout << "[dlta]: " << std::fixed << std::setprecision(2) << delta*180.0/M_PI << " deg\n\n\n";
 
                 if(time*1e-2 > qcarController.getWPVec().back()-1)
                 {
