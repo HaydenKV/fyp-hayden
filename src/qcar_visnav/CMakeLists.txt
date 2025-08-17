@@ -36,6 +36,7 @@ set(QCAR_VISNAV_SRCS
   src/estimation/sensors/speed.cpp
   src/estimation/utils/odometry_buffer.cpp
   src/estimation/node/ekf_node.cpp
+  src/estimation/sensors/accelerometer.cpp
 )
 
 add_executable(ekf_node ${QCAR_VISNAV_SRCS})

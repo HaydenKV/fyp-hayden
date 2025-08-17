@@ -16,6 +16,8 @@
 #include "qcar_visnav/estimation/sensors/gyro.h"
 #include "qcar_visnav/estimation/sensors/speed.h"
 #include "qcar_visnav/estimation/utils/odometry_buffer.h"
+#include "qcar_visnav/estimation/sensors/accelerometer.h"
+
 
 namespace qcar_nav {
 
@@ -32,6 +34,7 @@ public:
     pnh_.param<std::string>("odom_topic", odom_topic_, "/qcar/ekf/odom");
     pnh_.param<std::string>("odom_frame", odom_frame_, "odom");
     pnh_.param<std::string>("base_frame", base_frame_, "base_link");
+    pnh_.getParam("steer_joints", steer_joints_);
 
     pnh_.param("gyro_std", gyro_std_, 1.0);
     pnh_.param("speed_std", speed_std_, 0.1);
@@ -108,6 +111,9 @@ private:
   ros::NodeHandle nh_, pnh_;
   ros::Publisher odom_pub_;
   ros::Subscriber imu_sub_, js_sub_, truth_sub_;
+  std::vector<std::string> steer_joints_;
+  double last_delta_{0.0};
+  bool   have_delta_{false};
 
   std::string imu_topic_, joint_states_topic_, odom_topic_;
   std::string odom_frame_, base_frame_;
@@ -138,10 +144,14 @@ private:
     // Simple model input (no acceleration for now to avoid complexity)
     // Set inputs here ----------------------------------------------------------- add accel when working
     KinematicModel::ModelInput u;
-    u.a_meas_x = 0.0;  // Disabled for simplicity
-    u.a_meas_y = 0.0;
-    u.delta = 0.0;     // No steering input for now
+
+    qcar_nav::BodyAccel a = qcar_nav::removeGravity(*msg);
+    u.a_meas_x = a.ax;
+    u.a_meas_y = a.ay;
+
+    u.delta = have_delta_ ? last_delta_ : 0.0;
     u.dt = dt;
+    
     model_.setInput(u);
 
     // Predict
@@ -196,6 +206,27 @@ private:
     Eigen::Matrix<double,1,1> sqrtR;
     sqrtR(0) = speed_std_;
     ekf_.update(z, h, H, sqrtR);
+
+      if (!steer_joints_.empty() && !msg->position.empty()) {
+      double delta_sum = 0.0;
+      int delta_cnt = 0;
+
+      // Build a quick name->index map once per message
+      for (size_t i = 0; i < msg->name.size(); ++i) {
+        // If this joint is one of the steering joints and position is present
+        if (std::find(steer_joints_.begin(), steer_joints_.end(), msg->name[i]) != steer_joints_.end()) {
+          if (i < msg->position.size()) {
+            delta_sum += msg->position[i];  // radians
+            ++delta_cnt;
+          }
+        }
+      }
+
+      if (delta_cnt > 0) {
+        last_delta_ = delta_sum / delta_cnt; // average steering angle
+        have_delta_ = true;
+      }
+    }
   }
 
 
