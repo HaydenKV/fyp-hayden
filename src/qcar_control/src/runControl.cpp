@@ -64,8 +64,8 @@ int main(int argc, char **argv)
                 const float v_true = qcarController.getStates()->VelTruth;    // truth magnitude
 
                 ROS_INFO_THROTTLE(0.5,
-                "[VAL] v_ref=%.2f | v_ekf=%.2f | v_truth=%.2f | "
-                "error=%.2f ",
+                "[VAL] v_ref=%.4f | v_ekf=%.4f | v_truth=%.4f | "
+                "error=%.4f ",
                 (double)v_ref, (double)v_ekf, (double)v_true,
                 (double)(v_true - v_ekf));
 

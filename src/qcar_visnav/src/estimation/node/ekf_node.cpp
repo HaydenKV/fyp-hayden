@@ -4,6 +4,7 @@
 #include <nav_msgs/Odometry.h>
 #include <tf/transform_datatypes.h>
 #include <algorithm>
+#include <unordered_map>
 
 #include <Eigen/Dense>
 #include <string>
@@ -46,7 +47,22 @@ public:
     }
 
     // Drive wheel joints
-    drive_joints_ = {"wheelfl_motor", "wheelfr_motor"};
+    // Load drive joints and signs
+    std::vector<std::string> drive_joints_yaml;
+    if (pnh_.getParam("drive_joints", drive_joints_yaml) && !drive_joints_yaml.empty()) {
+      drive_joints_ = drive_joints_yaml;
+    } else {
+      drive_joints_ = {"wheelfl_motor", "wheelfr_motor"};
+    }
+
+    std::vector<double> drive_signs_yaml(drive_joints_.size(), 1.0);
+    pnh_.param("drive_signs", drive_signs_yaml, drive_signs_yaml);
+
+    std::unordered_map<std::string,double> wheel_sign_;
+    for (size_t k = 0; k < drive_joints_.size() && k < drive_signs_yaml.size(); ++k) {
+      wheel_sign_[drive_joints_[k]] = drive_signs_yaml[k];
+}
+
     
     // Publishers/Subscribers
     odom_pub_ = nh_.advertise<nav_msgs::Odometry>(odom_topic_, 10);
@@ -147,34 +163,41 @@ private:
   }
 
   void jointStatesCb(const sensor_msgs::JointState::ConstPtr& msg) {
+    // Sign corrections so forward motion sums positive
+    // Forward: left wheel encoder is negative, right is positive in your setup.
+    static const std::unordered_map<std::string, double> wheel_sign = {
+      {"wheelfl_motor", -1.0},  // flip left
+      {"wheelfr_motor",  +1.0}, // keep right
+    };
+
     double w_sum = 0.0;
     int cnt = 0;
 
     for (size_t i = 0; i < msg->name.size(); ++i) {
       const std::string& name = msg->name[i];
-      if (std::find(drive_joints_.begin(), drive_joints_.end(), name) != drive_joints_.end()) {
-        if (i < msg->velocity.size()) {
-          w_sum += std::abs(msg->velocity[i]);
-          cnt++;
-        }
+      auto it = wheel_sign.find(name);
+      if (it != wheel_sign.end() && i < msg->velocity.size()) {
+        w_sum += it->second * msg->velocity[i];  // apply sign
+        cnt++;
       }
     }
 
-    if (cnt < 1) return;
+    if (cnt < 1) return;              // need at least one wheel
+    const double omega_avg = w_sum / cnt;
+    const double v_meas    = omega_avg * rw_;    // m/s
 
-    double v_meas = (w_sum / cnt) * rw_;
-
-    // Speed update
+    // EKF update (unchanged)
     SpeedMeas speed;
     SpeedMeas::ZVec z, h;
     SpeedMeas::HVec H;
     speed.predict(ekf_.mu(), model_params_, h, H);
-
     z(0) = v_meas;
+
     Eigen::Matrix<double,1,1> sqrtR;
-    sqrtR(0) = speed_std_; // std -> squared inside update()
+    sqrtR(0) = speed_std_;
     ekf_.update(z, h, H, sqrtR);
   }
+
 
   void truthCb(const nav_msgs::Odometry::ConstPtr& msg) {
     latest_truth_ = *msg;

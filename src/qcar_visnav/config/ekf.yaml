@@ -23,8 +23,8 @@ dtMaxEst: 0.01      # [s] Max time step used by the filter (clamps IMU dt for st
 
 # --- Measurement noise (standard deviations) ---
 # These are *std devs*. The code squares them internally to form R.
-gyro_std: 0.05      # [rad/s] gyro yaw-rate noise (≈ 2.9°/s). If you truly want 1°/s, use 0.01745
-speed_std: 0.10     # [m/s]   wheel-speed-derived longitudinal speed noise
+gyro_std: 0.05     # [rad/s] gyro yaw-rate noise (≈ 2.9°/s). If you truly want 1°/s, use 0.01745
+speed_std: 0.1     # [m/s]   wheel-speed-derived longitudinal speed noise
 
 # --- Process noise (continuous-time intensities) ---
 # Interpreted as random-walk *intensities*; the model discretizes as: Qk = diag(q) * dt.
@@ -35,12 +35,12 @@ speed_std: 0.10     # [m/s]   wheel-speed-derived longitudinal speed noise
 #   q(vx), q(vy)      in (m^2/s^3)
 #   q(r), q(bg)       in (rad^2/s^3)
 #   q(bax), q(bay)    in ((m/s^2)^2 / s)
-q: [0.2, 0.02, 0.05, 1.0e-5, 5.0e-4, 5.0e-4]
+q: [0.5, 0.1, 0.05, 1.0e-5, 5.0e-4, 5.0e-4]
 
 # --- Initial conditions ---
 # Initial state mean (body at rest, zero biases by default).
 # Change if you know better startup conditions.
-initial_state: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # [vx0, vy0, r0, bg0, bax0, bay0]
+initial_state: [0.2, 0.1, 0.1, 0.0, 0.0, 0.0]   # [vx0, vy0, r0, bg0, bax0, bay0]
 
 # Initial covariance *diagonal* (these are VARIANCES, not std devs!)
 # Tuning tip:
@@ -51,5 +51,10 @@ initial_state: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # [vx0, vy0, r0, bg0, bax0, bay0
 #   r    : (5°/s)^2    = (0.0873 rad/s)^2 ≈ 0.0076
 #   bg   : (3°/s)^2    = (0.0524 rad/s)^2 ≈ 0.0027
 #   bax,y: (0.3 m/s^2)^2 = 0.09
-initial_cov_diag: [0.25, 0.25, 0.0076, 0.0027, 0.09, 0.09]
+initial_cov_diag: [0.25, 1.0e-3, 0.1, 0.1, 0.1, 0.1]
+
+# gazebo convention is this
+drive_joints: ["wheelfl_motor", "wheelfr_motor"]
+drive_signs:  [-1.0,            1.0]   # left negative, right positive -> forward sums positive
+
 
