@@ -11,42 +11,14 @@ find_package(catkin REQUIRED COMPONENTS
   nav_msgs
   geometry_msgs
   tf
-  tf2
   tf2_ros
-  tf2_geometry_msgs
-  visualization_msgs
-  message_generation
 )
 
 find_package(Eigen3 REQUIRED)
 
-## --- Messages (NEW) ---
-add_message_files(
-  FILES
-  Cone.msg
-  ConeArray.msg
-)
-
-generate_messages(
-  DEPENDENCIES
-  std_msgs
-)
-
 catkin_package(
   INCLUDE_DIRS include
-  CATKIN_DEPENDS
-    roscpp
-    rospy
-    sensor_msgs
-    std_msgs
-    nav_msgs
-    geometry_msgs
-    tf
-    tf2
-    tf2_ros
-    tf2_geometry_msgs
-    visualization_msgs
-    message_runtime
+  CATKIN_DEPENDS roscpp rospy sensor_msgs std_msgs nav_msgs tf2_ros geometry_msgs tf
   DEPENDS Eigen3
 )
 
@@ -56,7 +28,7 @@ include_directories(
   ${EIGEN3_INCLUDE_DIRS}
 )
 
-# Minimal EKF sources - only what we need  (YOUR ORIGINAL SECTION)
+# Minimal EKF sources - only what we need
 set(QCAR_VISNAV_SRCS
   src/estimation/model/kinematic_model.cpp
   src/estimation/ekf/ekf_core.cpp
@@ -68,34 +40,18 @@ set(QCAR_VISNAV_SRCS
 )
 
 add_executable(ekf_node ${QCAR_VISNAV_SRCS})
+
 set_target_properties(ekf_node PROPERTIES OUTPUT_NAME ekf_node PREFIX "")
+
 add_dependencies(ekf_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+
 target_link_libraries(ekf_node
   ${catkin_LIBRARIES}
   Eigen3::Eigen
 )
 
-## --- New nodes (stubs) ---
-add_executable(cone_detector_node
-  src/perception/cone_detector_node.cpp
-)
-add_dependencies(cone_detector_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-target_link_libraries(cone_detector_node ${catkin_LIBRARIES})
-
-add_executable(fastslam2_node
-  src/slam/fastslam2_node.cpp
-)
-add_dependencies(fastslam2_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-target_link_libraries(fastslam2_node ${catkin_LIBRARIES})
-
-add_executable(cone_markers_node
-  src/utils/cone_markers_node.cpp
-)
-add_dependencies(cone_markers_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-target_link_libraries(cone_markers_node ${catkin_LIBRARIES})
-
 # Install
-install(TARGETS ekf_node cone_detector_node fastslam2_node
+install(TARGETS ekf_node
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -120,3 +76,35 @@ catkin_install_python(PROGRAMS
   scripts/simple_forward_backward_test.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
+## --- qcar_visnav messages ---
+add_message_files(
+  FILES
+  Cone.msg
+  ConeArray.msg
+)
+
+generate_messages(
+  DEPENDENCIES
+  std_msgs
+)
+
+catkin_package(
+  CATKIN_DEPENDS roscpp std_msgs geometry_msgs nav_msgs sensor_msgs visualization_msgs message_runtime tf2 tf2_ros tf2_geometry_msgs
+)
+
+## --- qcar_visnav nodes (stubs) ---
+include_directories(
+  ${catkin_INCLUDE_DIRS}
+)
+
+add_executable(cone_detector_node
+  src/perception/cone_detector_node.cpp
+)
+add_dependencies(cone_detector_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(cone_detector_node ${catkin_LIBRARIES})
+
+add_executable(fastslam2_node
+  src/slam/fastslam2_node.cpp
+)
+add_dependencies(fastslam2_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(fastslam2_node ${catkin_LIBRARIES})

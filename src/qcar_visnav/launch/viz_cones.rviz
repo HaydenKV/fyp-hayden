@@ -1,0 +1,26 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+  - Class: rviz/Views
+    Name: Views
+Visualization Manager:
+  Global Options:
+    Fixed Frame: lidar
+  Displays:
+    - Class: rviz/TF
+      Name: TF
+    - Class: rviz/LaserScan
+      Name: scan
+      Topic: /scan
+      Size (m): 0.02
+      Style: Points
+      Queue Size: 10
+    - Class: rviz/MarkerArray
+      Name: cones_markers
+      Marker Topic: /cones_markers
+      Queue Size: 10
+Views:
+  Current:
+    Class: rviz/TopDownOrtho
+    Name: TopDown
+    Target Frame: lidar

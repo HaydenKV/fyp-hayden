@@ -1,0 +1,21 @@
+<launch>
+  <!-- Params -->
+  <rosparam file="$(find qcar_visnav)/config/perception.yaml" command="load"/>
+
+  <!-- Nodes: detector + markers -->
+  <node pkg="qcar_visnav" type="cone_detector_node" name="cone_detector" output="screen">
+    <param name="cones_topic" value="/cones"/>
+    <param name="lidar_topic" value="/scan"/>
+    <param name="lidar_frame" value="lidar"/>
+    <param name="debug_print" value="1"/>
+  </node>
+
+  <node pkg="qcar_visnav" type="cone_markers_node" name="cone_markers" output="screen">
+    <param name="cones_topic" value="/cones"/>
+    <param name="markers_topic" value="/cones_markers"/>
+    <param name="sphere_diameter" value="0.22"/>
+  </node>
+
+  <!-- RViz -->
+  <node pkg="rviz" type="rviz" name="rviz" args="-d $(find qcar_visnav)/launch/viz_cones.rviz"/>
+</launch>
