@@ -88,11 +88,10 @@ add_executable(fastslam2_node
 add_dependencies(fastslam2_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(fastslam2_node ${catkin_LIBRARIES})
 
-add_executable(cone_markers_node
-  src/utils/cone_markers_node.cpp
-)
-add_dependencies(cone_markers_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-target_link_libraries(cone_markers_node ${catkin_LIBRARIES})
+add_executable(cones_viz_node src/perception/cones_viz_node.cpp)
+add_dependencies(cones_viz_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(cones_viz_node ${catkin_LIBRARIES})
+
 
 # Install
 install(TARGETS ekf_node cone_detector_node fastslam2_node

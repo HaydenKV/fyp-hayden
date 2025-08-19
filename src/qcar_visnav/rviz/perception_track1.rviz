@@ -1,0 +1,52 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+  - Class: rviz/Views
+    Name: Views
+Visualization Manager:
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: lidar
+    Frame Rate: 30
+  Displays:
+    - Class: rviz/TF
+      Name: TF
+      Enabled: true
+      Show Axes: true
+      Show Names: false
+      Alpha: 0.5
+    - Class: rviz/LaserScan
+      Name: Scan
+      Enabled: true
+      Topic: /scan
+      Queue Size: 10
+      Style: Points
+      Size (m): 0.03
+      Style: Flat Squares
+      Axis: Z
+      Color Transformer: Intensity
+      Use Rainbow: true
+      Autocompute Intensity Bounds: true
+      Min Intensity: 0
+      Max Intensity: 4096
+      Decay Time: 0
+      Selectable: true
+    - Class: rviz/MarkerArray
+      Name: Cones (spheres)
+      Enabled: true
+      Marker Topic: /cones_markers
+      Queue Size: 10
+  Tools:
+    - Class: rviz/Interact
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+    - Class: rviz/Measure
+  Views:
+    Current:
+      Class: rviz/TopDownOrtho
+      Name: TopDown
+      Target Frame: lidar
+      Angle: 0
+      Scale: 50
+      X: 0
+      Y: 0

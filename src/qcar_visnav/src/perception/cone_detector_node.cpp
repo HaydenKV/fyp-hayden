@@ -3,8 +3,7 @@
 #include <qcar_visnav/ConeArray.h>
 #include <qcar_visnav/Cone.h>
 
-#include <Eigen/Core>  // Eigen::Vector2d
-
+#include <Eigen/Core>
 #include <vector>
 #include <cmath>
 #include <limits>
@@ -12,32 +11,41 @@
 #include <string>
 
 struct Params {
-  // lidar
-  double min_range{0.3};
-  double max_range{20.0};
-  double eps{0.2};             // clustering radius [m]
-  int    min_cluster_size{3};
-  int    max_cluster_size{50};
-  // noise (per-beam, prior to any averaging)
-  double sigma_r{0.07};        // [m]
-  double sigma_theta_deg{0.8}; // [deg]
-  // frames/topics
+  // detection mode: "clustering" or "circular_hough" (mutually exclusive)
+  std::string detection_mode{"clustering"};
+
+  // lidar topics/frames
   std::string lidar_topic{"/scan"};
   std::string cones_topic{"/cones"};
-  std::string lidar_frame{"lidar"};
-  // runtime
+  std::string lidar_frame{"lidar"}; // if empty, will use scan->header.frame_id
+
+  // gating
+  double min_range{0.3};
+  double max_range{15.0};
+
+  // scan-order segmentation (range jump threshold tau(r)=tau0 + alpha*r)
+  double seg_tau0{0.12};     // [m]
+  double seg_tau_alpha{0.03}; // [m/m]
+
+  // local clustering (inside each segment)
+  double eps{0.20};          // [m]
+  int    min_cluster_size{3};
+  int    max_cluster_size{50};
+
+  // noise (per-beam)
+  double sigma_r{0.07};        // [m]
+  double sigma_theta_deg{0.8}; // [deg]
+
   int debug_print{0};
 };
 
 static Params P;
 static ros::Publisher cones_pub;
 
-// Cluster the lidar points into cones
-// Simple O(N^2) radius clustering in XY (sufficient for moderate beam counts)
 static std::vector<std::vector<int>> clusterIndices(
     const std::vector<Eigen::Vector2d>& pts,
-    double eps, int min_sz, int max_sz) {
-
+    double eps, int min_sz, int max_sz)
+{
   const double eps2 = eps * eps;
   const int N = static_cast<int>(pts.size());
   std::vector<int> label(N, -1);
@@ -71,98 +79,171 @@ static std::vector<std::vector<int>> clusterIndices(
       clusters.push_back(std::move(members));
       cluster_id++;
     } else {
-      // mark noise (optional, not used later)
-      for (int idx : members) label[idx] = -2;
+      for (int idx : members) label[idx] = -2; // noise
     }
   }
   return clusters;
 }
 
-// Convert polar (range, bearing) to XY in lidar frame
-static void scanCb(const sensor_msgs::LaserScan::ConstPtr& scan) {
-  // Precompute sigma_theta in rad
-  const double sigma_theta = P.sigma_theta_deg * M_PI / 180.0;
+// Build scan-order segments using a range-jump threshold tau(r) = tau0 + alpha*r
+static std::vector<std::vector<int>> buildSegments(
+    const sensor_msgs::LaserScan& scan,
+    const std::vector<int>& kept_scan_indices)
+{
+  std::vector<std::vector<int>> segments;
+  if (kept_scan_indices.empty()) return segments;
 
-  // Gather valid points in XY (laser frame)
-  std::vector<Eigen::Vector2d> pts;
-  pts.reserve(scan->ranges.size());
+  const auto& ranges = scan.ranges;
+  auto start_new_segment = [&](int i_prev, int i_cur) -> bool {
+    // if either is invalid, force split
+    if (!std::isfinite(ranges[i_prev]) || !std::isfinite(ranges[i_cur])) return true;
+    const double r_prev = ranges[i_prev];
+    const double r_cur  = ranges[i_cur];
+    const double tau = P.seg_tau0 + P.seg_tau_alpha * std::max(r_prev, r_cur);
+    return std::fabs(r_cur - r_prev) > tau;
+  };
+
+  std::vector<int> current;
+  current.push_back(kept_scan_indices.front());
+
+  for (size_t k = 1; k < kept_scan_indices.size(); ++k) {
+    int i_prev = kept_scan_indices[k-1];
+    int i_cur  = kept_scan_indices[k];
+    // If non-consecutive beam indices, also split (gap in angle)
+    bool index_gap = (i_cur != i_prev + 1);
+
+    if (index_gap || start_new_segment(i_prev, i_cur)) {
+      if (current.size() >= static_cast<size_t>(P.min_cluster_size)) {
+        segments.push_back(current);
+      }
+      current.clear();
+    }
+    current.push_back(i_cur);
+  }
+
+  if (current.size() >= static_cast<size_t>(P.min_cluster_size)) {
+    segments.push_back(current);
+  }
+
+  return segments;
+}
+
+static void scanCb(const sensor_msgs::LaserScan::ConstPtr& scan)
+{
+  if (P.detection_mode != "clustering") {
+    // We only build clustering path now; keep interface stable.
+    if (P.debug_print) {
+      ROS_WARN_THROTTLE(2.0, "[cone_detector] detection.mode='%s' not implemented here. No output.",
+                        P.detection_mode.c_str());
+    }
+    return;
+  }
+
+  const double sigma_theta = P.sigma_theta_deg * M_PI / 180.0;
 
   const double a0 = scan->angle_min;
   const double da = scan->angle_increment;
 
-  for (size_t i = 0; i < scan->ranges.size(); ++i) {
+  // 1) Keep valid beams by index (respect gating)
+  std::vector<int> kept_scan_indices;
+  kept_scan_indices.reserve(scan->ranges.size());
+
+  for (int i = 0; i < static_cast<int>(scan->ranges.size()); ++i) {
     const float r = scan->ranges[i];
     if (!std::isfinite(r)) continue;
     if (r < P.min_range || r > P.max_range) continue;
-
-    const double th = a0 + da * static_cast<double>(i);
-    pts.emplace_back(r * std::cos(th), r * std::sin(th));
+    kept_scan_indices.push_back(i);
   }
 
-  // Cluster points
-  const auto clusters = pts.empty()
-      ? std::vector<std::vector<int>>{}
-      : clusterIndices(pts, P.eps, P.min_cluster_size, P.max_cluster_size);
+  // 2) Build scan-order segments using range jump rule
+  const auto segments = buildSegments(*scan, kept_scan_indices);
 
-  // Build ConeArray message
+  // 3) For each segment, collect XY points and run local clustering
   qcar_visnav::ConeArray out;
   out.header.stamp = scan->header.stamp;
-  out.header.frame_id = P.lidar_frame; // keep consistent with TF
+  out.header.frame_id = P.lidar_frame.empty() ? scan->header.frame_id : P.lidar_frame;
 
-  // For each cluster: centroid -> (range, bearing). Covariance ~ per-beam noise / sqrt(n)
-  for (const auto& c : clusters) {
-    if (c.empty()) continue;
+  size_t total_pts = 0, total_clusters = 0;
 
-    // centroid (XY)
-    Eigen::Vector2d mu(0.0, 0.0);
-    for (int idx : c) mu += pts[idx];
-    mu /= static_cast<double>(c.size());
+  for (const auto& seg : segments) {
+    // project this segment to XY
+    std::vector<Eigen::Vector2d> pts;
+    pts.reserve(seg.size());
+    for (int i : seg) {
+      const double r  = scan->ranges[i];
+      const double th = a0 + da * static_cast<double>(i);
+      pts.emplace_back(r * std::cos(th), r * std::sin(th));
+    }
+    total_pts += pts.size();
 
-    // to polar
-    const double range   = mu.norm();
-    const double bearing = std::atan2(mu.y(), mu.x());
+    // local clustering (fast because segments are small)
+    const auto clusters = clusterIndices(pts, P.eps, P.min_cluster_size, P.max_cluster_size);
 
-    // variance scaling with n
-    const double n = std::max(1, static_cast<int>(c.size()));
-    const double r_var  = (P.sigma_r * P.sigma_r) / n;
-    const double th_var = (sigma_theta * sigma_theta) / n;
+    // convert each cluster to Cone
+    for (const auto& c : clusters) {
+      if (c.empty()) continue;
+      Eigen::Vector2d mu(0.0, 0.0);
+      for (int idx : c) mu += pts[idx];
+      mu /= static_cast<double>(c.size());
 
-    qcar_visnav::Cone cone;
-    cone.range        = range;
-    cone.bearing      = bearing;
-    cone.r_var        = r_var;
-    cone.bearing_var  = th_var;
-    cone.color        = 0;    // unknown here (color node optional)
-    cone.color_conf   = 0.0;
+      const double range   = mu.norm();
+      const double bearing = std::atan2(mu.y(), mu.x());
 
-    out.cones.push_back(cone);
+      const double n = std::max(1, static_cast<int>(c.size()));
+      const double r_var  = (P.sigma_r * P.sigma_r) / n;
+      const double th_var = (sigma_theta * sigma_theta) / n;
+
+      qcar_visnav::Cone cone;
+      cone.range        = range;
+      cone.bearing      = bearing;
+      cone.r_var        = r_var;
+      cone.bearing_var  = th_var;
+      cone.color        = 0;
+      cone.color_conf   = 0.0;
+
+      out.cones.push_back(cone);
+      total_clusters++;
+    }
   }
 
   if (P.debug_print) {
-    ROS_INFO_THROTTLE(1.0, "[cone_detector] points=%zu clusters=%zu",
-                      pts.size(), clusters.size());
+    ROS_INFO_THROTTLE(1.0, "[cone_detector] mode=%s segs=%zu points=%zu clusters=%zu",
+                      P.detection_mode.c_str(), segments.size(), total_pts, total_clusters);
   }
 
   cones_pub.publish(out);
 }
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv)
+{
   ros::init(argc, argv, "cone_detector");
   ros::NodeHandle nh;
   ros::NodeHandle pnh("~");
 
-  // Load params (with defaults)
+  // mode
+  pnh.param("detection/mode", P.detection_mode, P.detection_mode);
+
+  // topics/frames
   pnh.param("cones_topic", P.cones_topic, P.cones_topic);
   pnh.param("lidar_topic", P.lidar_topic, P.lidar_topic);
   pnh.param("lidar_frame", P.lidar_frame, P.lidar_frame);
 
+  // gating
   pnh.param("lidar/min_range", P.min_range, P.min_range);
   pnh.param("lidar/max_range", P.max_range, P.max_range);
-  pnh.param("lidar/cluster_eps", P.eps, P.eps);
-  pnh.param("lidar/min_cluster_size", P.min_cluster_size, P.min_cluster_size);
-  pnh.param("lidar/max_cluster_size", P.max_cluster_size, P.max_cluster_size);
-  pnh.param("lidar/sigma_r", P.sigma_r, P.sigma_r);
-  pnh.param("lidar/sigma_theta_deg", P.sigma_theta_deg, P.sigma_theta_deg);
+
+  // segmentation
+  pnh.param("seg/tau0",        P.seg_tau0, P.seg_tau0);
+  pnh.param("seg/tau_alpha",   P.seg_tau_alpha, P.seg_tau_alpha);
+
+  // clustering
+  pnh.param("cluster/eps",              P.eps, P.eps);
+  pnh.param("cluster/min_cluster_size", P.min_cluster_size, P.min_cluster_size);
+  pnh.param("cluster/max_cluster_size", P.max_cluster_size, P.max_cluster_size);
+
+  // noise
+  pnh.param("noise/sigma_r",          P.sigma_r, P.sigma_r);
+  pnh.param("noise/sigma_theta_deg",  P.sigma_theta_deg, P.sigma_theta_deg);
 
   pnh.param("debug_print", P.debug_print, P.debug_print);
 

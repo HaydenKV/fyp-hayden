@@ -1,7 +1,14 @@
 <launch>
+  <arg name="use_sim_time" default="true"/>
   <rosparam file="$(find qcar_visnav)/config/perception.yaml" command="load"/>
+
   <node pkg="qcar_visnav" type="cone_detector_node" name="cone_detector" output="screen">
+    <param name="detection/mode" value="$(arg detection_mode)"/>
     <param name="cones_topic" value="/cones"/>
     <param name="lidar_topic" value="/scan"/>
+    <param name="lidar_frame" value="lidar"/>
   </node>
+
+  <node pkg="qcar_visnav" type="cones_viz_node" name="cones_viz" output="screen"/>
+  
 </launch>
