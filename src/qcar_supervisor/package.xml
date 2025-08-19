@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>qcar_supervisor</name>
+  <version>0.1.0</version>
+  <description>
+    ROS package to run velocity EKF and Jump-Markov Filter (JMF) nodes 
+    for the QCar simulation.
+  </description>
+
+  <maintainer email="you@example.com">Your Name</maintainer>
+  <license>BSD</license>
+
+  <!-- Build tool dependency -->
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <!-- Runtime & build dependencies -->
+  <depend>roscpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>tf</depend>
+  <depend>std_msgs</depend>
+  <depend>message_filters</depend>
+
+  <!-- For Eigen includes -->
+  <depend>eigen3_cmake_module</depend>
+
+  <!-- Testing -->
+  <test_depend>rostest</test_depend>
+  <test_depend>gtest</test_depend>
+
+  <export>
+    <!-- Other tools can pick up exported information here -->
+  </export>
+</package>
+

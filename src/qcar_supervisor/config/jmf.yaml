@@ -1,0 +1,14 @@
+# qcar_supervisor/config/jmf.yaml
+
+# physical parameter
+model_length: 2.5
+
+# process‐noise vector (same ordering as EKF)
+Q: [0.01,  0.01,  0.001,  1e-6,  1e-6,  1e-6]
+
+# mode‐transition matrix Pi, flattened row‐major (here a 2×2 example)
+# [ p11, p12,
+#   p21, p22 ]
+Pi: [0.9,  0.1,
+     0.1,  0.9]
+
