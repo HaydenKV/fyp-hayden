@@ -92,9 +92,18 @@ add_executable(cones_viz_node src/perception/cones_viz_node.cpp)
 add_dependencies(cones_viz_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(cones_viz_node ${catkin_LIBRARIES})
 
+# --- NEW: cone_tracker_node ---
+add_executable(cone_tracker_node
+  src/perception/cone_tracker_node.cpp
+)
+add_dependencies(cone_tracker_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(cone_tracker_node
+  ${catkin_LIBRARIES}
+  Eigen3::Eigen
+)
 
 # Install
-install(TARGETS ekf_node cone_detector_node fastslam2_node
+install(TARGETS ekf_node cone_detector_node fastslam2_node cones_viz_node cone_tracker_node
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
