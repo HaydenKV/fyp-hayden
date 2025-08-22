@@ -6,7 +6,7 @@ Panels:
 Visualization Manager:
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: lidar
+    Fixed Frame: odom
     Frame Rate: 30
   Displays:
     - Class: rviz/TF
@@ -15,14 +15,14 @@ Visualization Manager:
       Show Axes: true
       Show Names: false
       Alpha: 0.5
+
     - Class: rviz/LaserScan
       Name: Scan
       Enabled: true
       Topic: /scan
       Queue Size: 10
-      Style: Points
-      Size (m): 0.03
       Style: Flat Squares
+      Size (m): 0.03
       Axis: Z
       Color Transformer: Intensity
       Use Rainbow: true
@@ -31,21 +31,32 @@ Visualization Manager:
       Max Intensity: 4096
       Decay Time: 0
       Selectable: true
+
+    # RAW cones -> spheres
     - Class: rviz/MarkerArray
-      Name: Cones (spheres)
+      Name: Cones (RAW)
       Enabled: true
-      Marker Topic: /cones_markers
+      Marker Topic: /cones_markers_raw
       Queue Size: 10
+
+    # TRACKED cones -> smaller spheres, different color (via the helper below)
+    - Class: rviz/MarkerArray
+      Name: Cones (TRACKED)
+      Enabled: true
+      Marker Topic: /cones_markers_tracked
+      Queue Size: 10
+
   Tools:
     - Class: rviz/Interact
     - Class: rviz/MoveCamera
     - Class: rviz/Select
     - Class: rviz/Measure
+
   Views:
     Current:
       Class: rviz/TopDownOrtho
       Name: TopDown
-      Target Frame: lidar
+      Target Frame: odom
       Angle: 0
       Scale: 50
       X: 0

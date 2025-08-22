@@ -1,12 +1,14 @@
+// cone_tracker_node.cpp  (global data association via Hungarian algorithm)
+
 #include <ros/ros.h>
-#include <nav_msgs/Odometry.h>
-#include <sensor_msgs/LaserScan.h>
 #include <qcar_visnav/ConeArray.h>
 #include <qcar_visnav/Cone.h>
 
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2/LinearMath/Matrix3x3.h>
 #include <geometry_msgs/PointStamped.h>
 #include <geometry_msgs/TransformStamped.h>
 
@@ -19,35 +21,34 @@
 #include <string>
 
 // ============================
-// Params
+// Params (loaded via private namespace)
 // ============================
 struct Params {
-  std::string detections_topic{"/cones"};   // from cone_detector_node.cpp
-  std::string tracks_topic{"/tracked_cones"};           // tracked + ID
+  std::string detections_topic{"/cones"};         // input: from cone_detector_node
+  std::string tracks_topic{"/tracked_cones"};     // output: confirmed tracks
   std::string odom_frame{"odom"};
-  std::string base_frame{"base_footprint"};     // EKF base frame
-  double chi2_gate{5.99};                       // 95% @ 2DOF
-  int init_hits{2};                             
-  int max_misses{5};
-  double init_cov{0.25};                        // P0 = init_cov * I (m^2)
-  double q_xy{0.01};                            // process noise base (m^2/s)
-  double r_scale{1.0};                          // scale detector R if needed
-  double max_dt{0.2};                           // clamp dt for stability
-  bool use_hungarian{false};                    // (greedy by default)
-  int debug{1};
+  std::string base_frame{"base_footprint"};
+  double chi2_gate{5.99};     // 95% @ 2DOF
+  int    init_hits{2};        // promote to confirmed after this many consecutive hits
+  int    max_misses{5};       // drop track after this many consecutive misses
+  double init_cov{0.25};      // initial covariance (m^2)
+  double q_xy{0.01};          // process noise spectral density (m^2/s) for static-landmark jitter
+  double r_scale{1.0};        // scales detector measurement covariance
+  double max_dt{0.2};         // cap dt in prediction for stability
+  int    debug{1};
 } P;
 
 // ============================
-// Track struct
+// Track structure
 // ============================
 struct Track {
-  Eigen::Vector2d x{Eigen::Vector2d::Zero()};    // in odom: [X,Y]
-  Eigen::Matrix2d P{Eigen::Matrix2d::Identity()}; // covariance in odom
+  Eigen::Vector2d x{Eigen::Vector2d::Zero()};       // state in ODOM: [X,Y]
+  Eigen::Matrix2d P{Eigen::Matrix2d::Identity()};   // covariance in ODOM
   uint32_t id{0};
-  int hits{0};             // consecutive hits
-  int misses{0};           // consecutive misses
+  int hits{0};          // consecutive hits
+  int misses{0};        // consecutive misses
   bool confirmed{false};
-  ros::Time last_stamp;    // time of last update/predict
+  ros::Time last_stamp; // time of last predict/update
   int color{0};
   double color_conf{0.0};
 };
@@ -56,7 +57,7 @@ struct Track {
 // Globals
 // ============================
 static ros::Subscriber sub_dets;
-static ros::Publisher pub_tracks;
+static ros::Publisher  pub_tracks;
 static std::vector<Track> g_tracks;
 static uint32_t g_next_id = 1;
 
@@ -64,16 +65,13 @@ static std::unique_ptr<tf2_ros::Buffer> tf_buffer;
 static std::unique_ptr<tf2_ros::TransformListener> tf_listener;
 
 // ----------------------------
-// Helpers
+// Math helpers
 // ----------------------------
-
-// 2D rotation matrix from yaw
 static inline Eigen::Matrix2d Rot2(double yaw) {
-  double c = std::cos(yaw), s = std::sin(yaw);
+  const double c = std::cos(yaw), s = std::sin(yaw);
   Eigen::Matrix2d R; R << c, -s, s, c; return R;
 }
 
-// Extract yaw from geometry_msgs::TransformStamped (odom->frame)
 static double yawFromTF(const geometry_msgs::TransformStamped &tf) {
   tf2::Quaternion q;
   tf2::fromMsg(tf.transform.rotation, q);
@@ -82,44 +80,39 @@ static double yawFromTF(const geometry_msgs::TransformStamped &tf) {
   return yaw;
 }
 
-// Convert detector polar (in lidar frame) -> Cartesian in lidar
 static inline Eigen::Vector2d polarToXY(double r, double th) {
-  return Eigen::Vector2d(r * std::cos(th), r * std::sin(th));
+  return { r*std::cos(th), r*std::sin(th) };
 }
 
-// Polar covariance (r,theta) -> Cartesian covariance (x,y) in *same* frame
+// Polar (r,th) covariance -> Cartesian (x,y) in same frame
 static Eigen::Matrix2d polarCovToCart(double r, double th, double r_var, double th_var) {
-  // J = d[x,y]/d[r,th] = [[cos th, -r sin th],
-  //                       [sin th,  r cos th]]
   Eigen::Matrix2d J;
-  J << std::cos(th), -r * std::sin(th),
-       std::sin(th),  r * std::cos(th);
+  J << std::cos(th), -r*std::sin(th),
+       std::sin(th),  r*std::cos(th);
   Eigen::Matrix2d Rp = Eigen::Matrix2d::Zero();
   Rp(0,0) = r_var;
   Rp(1,1) = th_var;
   return J * Rp * J.transpose();
 }
 
-// Rotate covariance: Σ2 = R Σ R^T
-static inline Eigen::Matrix2d rotateCov(const Eigen::Matrix2d &Sigma, double yaw) {
+// Rotate covariance: S2 = R S R^T
+static inline Eigen::Matrix2d rotateCov(const Eigen::Matrix2d &S, double yaw) {
   Eigen::Matrix2d R = Rot2(yaw);
-  return R * Sigma * R.transpose();
+  return R * S * R.transpose();
 }
 
-// Cartesian covariance (x,y) -> polar covariance (r,theta) at point (x,y)
+// Cartesian (x,y) covariance -> polar (r,th) at point p
 static Eigen::Matrix2d cartCovToPolar(const Eigen::Vector2d &p, const Eigen::Matrix2d &Sxy) {
   const double x = p.x(), y = p.y();
   const double r2 = x*x + y*y;
   const double r  = std::sqrt(std::max(r2, 1e-12));
-  // H = d[r,theta]/d[x,y] = [[x/r, y/r],
-  //                          [-y/r^2, x/r^2]]
-  Eigen::Matrix<double,2,2> H;
-  H << x/r, y/r,
-      -y/(r2), x/(r2);
+  Eigen::Matrix2d H; // d[r,th]/d[x,y]
+  H <<  x/r,  y/r,
+       -y/r2, x/r2;
   return H * Sxy * H.transpose();
 }
 
-// Transform a 2D point (x,y,0) from src->dst at given stamp; also return yaw of rotation
+// Transform a 2D point (x,y,0) from src->dst at given stamp; also return yaw
 static bool transformXY(const Eigen::Vector2d &p_src,
                         const std::string &src_frame,
                         const std::string &dst_frame,
@@ -143,26 +136,72 @@ static bool transformXY(const Eigen::Vector2d &p_src,
                       src_frame.c_str(), dst_frame.c_str(), stamp.toSec(), ex.what());
     return false;
   }
-  p_dst = Eigen::Vector2d(ps_out.point.x, ps_out.point.y);
+  p_dst = { ps_out.point.x, ps_out.point.y };
   yaw_src_to_dst = yawFromTF(tf);
   return true;
 }
 
-// Greedy 1-1 assignment from a set of (i_det, j_track, dist) sorted by dist
-struct Candidate { int i; int j; double d; };
-static std::vector<std::pair<int,int>> greedyAssign(std::vector<Candidate> cand, int Nd, int Nt)
+// ----------------------------
+// Hungarian algorithm (min-cost assignment)
+// Input: square cost matrix C[n][n]
+// Output: assignment_by_row[i] = j (or -1 if unassigned)
+// ----------------------------
+static std::vector<int> hungarian(const std::vector<std::vector<double>>& C,
+                                  double unmatched_cost)
 {
-  std::sort(cand.begin(), cand.end(), [](const Candidate &a, const Candidate &b){ return a.d < b.d;});
-  std::vector<char> det_used(Nd, 0), trk_used(Nt, 0);
-  std::vector<std::pair<int,int>> pairs;
-  pairs.reserve(std::min(Nd,Nt));
-  for (const auto &c : cand) {
-    if (!det_used[c.i] && !trk_used[c.j]) {
-      det_used[c.i] = trk_used[c.j] = 1;
-      pairs.emplace_back(c.i, c.j);
+  const int n = static_cast<int>(C.size());
+  const double INF = 1e18;
+
+  // 1-indexed potentials and matching
+  std::vector<double> u(n+1, 0.0), v(n+1, 0.0);
+  std::vector<int> p(n+1, 0), way(n+1, 0);
+
+  for (int i = 1; i <= n; ++i) {
+    p[0] = i;
+    int j0 = 0;
+    std::vector<double> minv(n+1, INF);
+    std::vector<char> used(n+1, false);
+
+    do {
+      used[j0] = true;
+      int i0 = p[j0];
+      double delta = INF;
+      int j1 = 0;
+
+      for (int j = 1; j <= n; ++j) if (!used[j]) {
+        // cost(i0,j) - u[i0] - v[j]
+        double cur = C[i0-1][j-1] - u[i0] - v[j];
+        if (cur < minv[j]) { minv[j] = cur; way[j] = j0; }
+        if (minv[j] < delta) { delta = minv[j]; j1 = j; }
+      }
+
+      for (int j = 0; j <= n; ++j) {
+        if (used[j]) { u[p[j]] += delta; v[j] -= delta; }
+        else { minv[j] -= delta; }
+      }
+      j0 = j1;
+    } while (p[j0] != 0);
+
+    // augment
+    do {
+      int j1 = way[j0];
+      p[j0] = p[j1];
+      j0 = j1;
+    } while (j0);
+  }
+
+  // Build assignment by row (0..n-1)
+  std::vector<int> assignment(n, -1);
+  for (int j = 1; j <= n; ++j) {
+    if (p[j] != 0) {
+      int i = p[j] - 1;
+      int jj = j - 1;
+      // Treat as unassigned if selected dummy/unmatched cost
+      if (C[i][jj] >= unmatched_cost - 1e-9) assignment[i] = -1;
+      else assignment[i] = jj;
     }
   }
-  return pairs;
+  return assignment;
 }
 
 // ============================
@@ -173,9 +212,8 @@ void conesCb(const qcar_visnav::ConeArray::ConstPtr &msg)
   const ros::Time stamp = msg->header.stamp;
   const std::string lidar_frame = msg->header.frame_id.empty() ? "lidar" : msg->header.frame_id;
 
-  // Precompute TFs used in this callback:
-  // 1) lidar -> odom (for detections to odom)
-  geometry_msgs::TransformStamped tf_lidar_odom;
+  // TF: lidar -> odom (for detections) and odom -> base (to publish polar from base)
+  geometry_msgs::TransformStamped tf_lidar_odom, tf_odom_base;
   try {
     tf_lidar_odom = tf_buffer->lookupTransform(P.odom_frame, lidar_frame, stamp, ros::Duration(0.05));
   } catch (const tf2::TransformException &ex) {
@@ -183,10 +221,8 @@ void conesCb(const qcar_visnav::ConeArray::ConstPtr &msg)
                       lidar_frame.c_str(), P.odom_frame.c_str(), ex.what());
     return;
   }
-  const double yaw_lidar_to_odom = yawFromTF(tf_lidar_odom); // for covariance rotation
+  double yaw_lidar_to_odom = yawFromTF(tf_lidar_odom);
 
-  // 2) odom -> base (for publishing polar from base_footprint)
-  geometry_msgs::TransformStamped tf_odom_base;
   try {
     tf_odom_base = tf_buffer->lookupTransform(P.base_frame, P.odom_frame, stamp, ros::Duration(0.05));
   } catch (const tf2::TransformException &ex) {
@@ -194,111 +230,120 @@ void conesCb(const qcar_visnav::ConeArray::ConstPtr &msg)
                       P.odom_frame.c_str(), P.base_frame.c_str(), ex.what());
     return;
   }
-  const double yaw_odom_to_base = yawFromTF(tf_odom_base);
+  double yaw_odom_to_base = yawFromTF(tf_odom_base);
 
-  // Build detection list in ODOM coordinates + R in ODOM
+  // Build detections in ODOM
   struct Det {
     Eigen::Vector2d z_odom;
     Eigen::Matrix2d R_odom;
-    int color;
-    double color_conf;
-    int32_t det_id;
+    int color; double color_conf; int32_t det_id;
   };
   std::vector<Det> dets; dets.reserve(msg->cones.size());
 
   for (const auto &c : msg->cones) {
-    double r = c.range;
-    double th = c.bearing;
+    const double r = c.range, th = c.bearing;
     if (!std::isfinite(r) || !std::isfinite(th)) continue;
 
-    // 1) polar->cart in LIDAR
     Eigen::Vector2d p_lidar = polarToXY(r, th);
-    // 2) point to ODOM
-    Eigen::Vector2d p_odom;
-    double yaw_tmp = 0.0;
+    Eigen::Vector2d p_odom; double yaw_tmp = 0.0;
     if (!transformXY(p_lidar, lidar_frame, P.odom_frame, stamp, p_odom, yaw_tmp)) continue;
 
-    // 3) covariance: polar->cart in LIDAR, then rotate to ODOM
     const double r_var = std::max(1e-8, c.r_var) * P.r_scale;
     const double th_var = std::max(1e-8, c.bearing_var) * P.r_scale;
     Eigen::Matrix2d S_lidar = polarCovToCart(r, th, r_var, th_var);
     Eigen::Matrix2d S_odom  = rotateCov(S_lidar, yaw_lidar_to_odom);
 
-    dets.push_back( Det{ p_odom, S_odom, c.color, c.color_conf, c.id } );
+    dets.push_back({ p_odom, S_odom, c.color, c.color_conf, c.id });
   }
 
   const int Nd = static_cast<int>(dets.size());
   const int Nt = static_cast<int>(g_tracks.size());
 
-  // Predict tracks (static in odom): x_pred = x;  P_pred += Q*dt
-  // dt per-track from its last_stamp to current stamp
+  // Predict (static landmarks): x_k|k-1 = x_{k-1},  P += Q*dt
   for (auto &t : g_tracks) {
     double dt = (stamp - t.last_stamp).toSec();
     if (!std::isfinite(dt) || dt < 0.0) dt = 0.0;
     dt = std::min(dt, P.max_dt);
-    const double q = std::max(0.0, P.q_xy);
-    const Eigen::Matrix2d Q = (q * std::max(dt, 1e-3)) * Eigen::Matrix2d::Identity();
-    t.P = t.P + Q;
-    // x unchanged (static landmarks in odom)
+    const Eigen::Matrix2d Q = (std::max(0.0, P.q_xy) * std::max(dt, 1e-3)) * Eigen::Matrix2d::Identity();
+    t.P += Q;
   }
 
-  // Build gated candidate list
-  std::vector<Candidate> candidates; candidates.reserve(Nd * Nt);
+  // ----------------------------
+  // Global assignment via Hungarian
+  // ----------------------------
+  const int n = std::max(Nd, Nt);
+  const double UNMATCHED_COST = P.chi2_gate + 10.0; // larger than any gated pair
+
+  // Build square cost matrix with dummy rows/cols
+  std::vector<std::vector<double>> C(n, std::vector<double>(n, UNMATCHED_COST));
+
+  // Fill real pair costs with gated Mahalanobis distance^2
   for (int i = 0; i < Nd; ++i) {
     for (int j = 0; j < Nt; ++j) {
-      Track &t = g_tracks[j];
-      // Innovation in ODOM
+      const Track &t = g_tracks[j];
       Eigen::Vector2d v = dets[i].z_odom - t.x;
       Eigen::Matrix2d S = t.P + dets[i].R_odom;
-      // Mahalanobis distance^2
       Eigen::LLT<Eigen::Matrix2d> llt(S);
       if (llt.info() != Eigen::Success) continue;
-      Eigen::Vector2d y = llt.solve(v);
-      double d2 = v.dot(y);
-      if (d2 <= P.chi2_gate && std::isfinite(d2))
-        candidates.push_back({i, j, d2});
+      double d2 = v.dot( llt.solve(v) );
+      if (std::isfinite(d2) && d2 <= P.chi2_gate) {
+        C[i][j] = d2;
+      }
+      // else leave as UNMATCHED_COST (i.e., don't force a bad match)
     }
   }
 
-  // Assign (greedy by distance)
-  std::vector<std::pair<int,int>> pairs = greedyAssign(candidates, Nd, Nt);
-  std::vector<char> det_used(Nd, 0), trk_used(Nt, 0);
-  for (const auto &pr : pairs) { det_used[pr.first] = 1; trk_used[pr.second] = 1; }
+  // Solve assignment
+  std::vector<int> assign = hungarian(C, UNMATCHED_COST);
 
-  // Updates for matched tracks
+  // Decode: pairs, unmatched dets, unmatched tracks
+  std::vector<std::pair<int,int>> pairs;
+  std::vector<char> det_used(Nd, 0), trk_used(Nt, 0);
+
+  for (int i = 0; i < Nd; ++i) {
+    int j = assign[i];
+    if (j >= 0 && j < Nt) {
+      // Only accept if within gate (defensive)
+      if (C[i][j] < UNMATCHED_COST - 1e-9) {
+        pairs.emplace_back(i, j);
+        det_used[i] = 1;
+        trk_used[j] = 1;
+      }
+    }
+  }
+
+  // Update matched tracks
   for (const auto &pr : pairs) {
     const int i = pr.first, j = pr.second;
     Track &t = g_tracks[j];
     const auto &d = dets[i];
 
-    // EKF update with H=I
     Eigen::Matrix2d S = t.P + d.R_odom;
-    Eigen::Matrix2d K = t.P * S.inverse();
-    t.x = t.x + K * (d.z_odom - t.x);
-    t.P = (Eigen::Matrix2d::Identity() - K) * t.P;
+    Eigen::Matrix2d K = t.P * S.inverse();          // H = I
+    t.x += K * (d.z_odom - t.x);
+    t.P  = (Eigen::Matrix2d::Identity() - K) * t.P;
+
     t.misses = 0;
     t.hits   = std::min(t.hits + 1, 1000000);
     t.last_stamp = stamp;
 
-    // colour smoothing (EWMA)
     if (d.color_conf > 0.0) {
-      t.color_conf = 0.7 * t.color_conf + 0.3 * d.color_conf;
-      t.color = (t.color_conf >= 0.5) ? d.color : t.color; // crude: update only if confident
+      t.color_conf = 0.7*t.color_conf + 0.3*d.color_conf;
+      if (t.color_conf >= 0.5) t.color = d.color;
     }
-
     if (!t.confirmed && t.hits >= P.init_hits) t.confirmed = true;
   }
 
-  // Handle unmatched tracks (miss)
+  // Missed tracks
   for (int j = 0; j < Nt; ++j) {
     if (trk_used[j]) continue;
     Track &t = g_tracks[j];
     t.misses++;
-    t.hits = 0; // reset consecutive hit counter
+    t.hits = 0;
     t.last_stamp = stamp;
   }
 
-  // Create new tentative tracks from unmatched detections
+  // New tracks from unmatched detections
   for (int i = 0; i < Nd; ++i) {
     if (det_used[i]) continue;
     const auto &d = dets[i];
@@ -317,33 +362,29 @@ void conesCb(const qcar_visnav::ConeArray::ConstPtr &msg)
     g_tracks.emplace_back(std::move(t));
   }
 
-  // Remove stale tracks
+  // Prune stale
   g_tracks.erase(std::remove_if(g_tracks.begin(), g_tracks.end(),
                 [](const Track &t){ return t.misses > P.max_misses; }),
                 g_tracks.end());
 
-  // Publish confirmed tracks as ConeArray in base frame (range/bearing from base)
+  // Publish confirmed tracks as ConeArray in BASE frame (polar from base)
   qcar_visnav::ConeArray out;
   out.header.stamp = stamp;
   out.header.frame_id = P.base_frame;
 
-  // We need odom->base transform to compute base-relative polar & rotate covariance
-  const double yaw_b = yaw_odom_to_base; // rotation from odom into base
-  Eigen::Matrix2d R_ob = Rot2(yaw_b);    // rot odom->base
-  Eigen::Vector2d t_ob(tf_odom_base.transform.translation.x,
-                       tf_odom_base.transform.translation.y);
+  const double yaw_b = yaw_odom_to_base;          // rotation odom->base
+  const Eigen::Matrix2d R_ob = Rot2(yaw_b);
+  const Eigen::Vector2d t_ob(tf_odom_base.transform.translation.x,
+                             tf_odom_base.transform.translation.y);
 
   size_t n_pub = 0;
   for (const auto &t : g_tracks) {
     if (!t.confirmed) continue;
 
-    // point in base: p_base = R_ob * (p_odom) + t_ob
     Eigen::Vector2d p_base = R_ob * t.x + t_ob;
-
-    // covariance in base: S_base = R_ob * P * R_ob^T
     Eigen::Matrix2d S_base = R_ob * t.P * R_ob.transpose();
 
-    const double r = std::hypot(p_base.x(), p_base.y());
+    const double r  = std::hypot(p_base.x(), p_base.y());
     const double th = std::atan2(p_base.y(), p_base.x());
     Eigen::Matrix2d S_polar = cartCovToPolar(p_base, S_base);
 
@@ -362,7 +403,7 @@ void conesCb(const qcar_visnav::ConeArray::ConstPtr &msg)
 
   if (P.debug) {
     ROS_INFO_THROTTLE(0.5,
-      "[cone_tracker] det=%d matched=%zu new=%d active=%zu confirmed_published=%zu",
+      "[cone_tracker:HUNG] det=%d matched=%zu new=%d active=%zu confirmed_published=%zu",
       Nd, pairs.size(), Nd - (int)pairs.size(), g_tracks.size(), n_pub);
   }
 
@@ -378,20 +419,19 @@ int main(int argc, char** argv)
   ros::NodeHandle nh;
   ros::NodeHandle pnh("~");
 
-  // params
+  // Load params
   pnh.param("detections_topic", P.detections_topic, P.detections_topic);
-  pnh.param("tracks_topic", P.tracks_topic, P.tracks_topic);
-  pnh.param("odom_frame", P.odom_frame, P.odom_frame);
-  pnh.param("base_frame", P.base_frame, P.base_frame);
-  pnh.param("gate_chi2", P.chi2_gate, P.chi2_gate);
-  pnh.param("init_hits", P.init_hits, P.init_hits);
-  pnh.param("max_misses", P.max_misses, P.max_misses);
-  pnh.param("init_cov", P.init_cov, P.init_cov);
-  pnh.param("q_xy", P.q_xy, P.q_xy);
-  pnh.param("r_scale", P.r_scale, P.r_scale);
-  pnh.param("max_dt", P.max_dt, P.max_dt);
-  pnh.param("use_hungarian", P.use_hungarian, P.use_hungarian);
-  pnh.param("debug", P.debug, P.debug);
+  pnh.param("tracks_topic",     P.tracks_topic,     P.tracks_topic);
+  pnh.param("odom_frame",       P.odom_frame,       P.odom_frame);
+  pnh.param("base_frame",       P.base_frame,       P.base_frame);
+  pnh.param("gate_chi2",        P.chi2_gate,        P.chi2_gate);
+  pnh.param("init_hits",        P.init_hits,        P.init_hits);
+  pnh.param("max_misses",       P.max_misses,       P.max_misses);
+  pnh.param("init_cov",         P.init_cov,         P.init_cov);
+  pnh.param("q_xy",             P.q_xy,             P.q_xy);
+  pnh.param("r_scale",          P.r_scale,          P.r_scale);
+  pnh.param("max_dt",           P.max_dt,           P.max_dt);
+  pnh.param("debug",            P.debug,            P.debug);
 
   tf_buffer.reset(new tf2_ros::Buffer(ros::Duration(10.0)));
   tf_listener.reset(new tf2_ros::TransformListener(*tf_buffer));
@@ -399,7 +439,7 @@ int main(int argc, char** argv)
   pub_tracks = nh.advertise<qcar_visnav::ConeArray>(P.tracks_topic, 1, false);
   sub_dets   = nh.subscribe<qcar_visnav::ConeArray>(P.detections_topic, 1, &conesCb);
 
-  ROS_INFO("[cone_tracker] up. subs='%s' -> pubs='%s', frames: odom='%s' base='%s'",
+  ROS_INFO("[cone_tracker:HUNG] up. subs='%s' -> pubs='%s', frames: odom='%s' base='%s'",
            P.detections_topic.c_str(), P.tracks_topic.c_str(),
            P.odom_frame.c_str(), P.base_frame.c_str());
 

@@ -1,29 +1,83 @@
-detection:
-  mode: "clustering"          # "clustering" | "circular_hough"
+# ============================================
+# Perception + Tracking + Visualization config
+# ============================================
 
-lidar:
-  min_range: 0.3
-  max_range: 15.0
+cone_detector:
+  detection:
+    mode: "clustering"
 
-seg:
-  tau0: 0.12                  # meters
-  tau_alpha: 0.03             # meters per meter
+  lidar:
+    min_range: 0.3
+    max_range: 17.0
 
-cluster:
-  eps: 0.20                   # meters
-  min_cluster_size: 3
-  max_cluster_size: 50
+  seg:
+    tau0: 0.12
+    tau_alpha: 0.03
 
-noise:
-  sigma_r: 0.07               # meters
-  sigma_theta_deg: 0.8        # degrees
+  cluster:
+    eps: 0.25
+    min_cluster_size: 2
+    max_cluster_size: 40
 
-topics:
-  lidar: "/scan"
-  cones: "/cones"
-frame:
-  lidar: "lidar"
+  noise:
+    sigma_r: 0.07
+    sigma_theta_deg: 0.8
 
-debug_print: 1
+  topics:
+    lidar: "/scan"       # driver publishes LaserScan here
+    cones: "/cones"      # detector publishes ConeArray here (in scan frame)
 
+  frame:
+    lidar: ""            # empty => pass-through: use scan->header.frame_id (e.g. "lidar")
 
+  # Flat keys to match pnh.param() lookups
+  lidar_topic: "/scan"
+  cones_topic: "/cones"
+  lidar_frame: ""
+
+  debug_print: 1
+
+cone_tracker:
+  detections_topic: "/cones"
+  tracks_topic:     "/tracked_cones"
+
+  odom_frame:  "odom"
+  base_frame:  "base_footprint"
+
+  gate_chi2:   7.38 # 97.5% confidence for 2D Gaussian
+  init_hits:   2
+  max_misses:  8
+
+  init_cov:    0.25
+  q_xy:        0.03
+  r_scale:     1.1
+
+  tf_use_latest: true
+  debug: 1
+
+cone_markers_raw:
+  cones_topic:   "/cones"
+  markers_topic: "/cones_markers_raw"
+  sphere_diam:   0.24
+  text_scale:    0.18
+  lifetime:      0.0
+  show_text:     true
+  use_latest_tf: true
+  stamp_offset:  0.0
+  override_color: false
+  label_mode:    "stats"
+  z_offset:      0.0       # stays at ground plane
+
+cone_markers_tracked:
+  cones_topic:   "/tracked_cones"
+  markers_topic: "/cones_markers_tracked"
+  sphere_diam:   0.18
+  text_scale:    0.18
+  lifetime:      0.0
+  show_text:     true
+  use_latest_tf: true
+  stamp_offset:  0.0
+  override_color: true
+  rgba:          "0.10 1.00 0.10 1.0"   # bright green
+  label_mode:    "id"
+  z_offset:      0.03      # lift so tracked cones render above raw
