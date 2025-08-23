@@ -1,116 +1,54 @@
-Panels:
-- Class: rviz/Displays
-  Name: Displays
-- Class: rviz/Views
-  Name: Views
-Visualization Manager:
-  Global Options:
-    Fixed Frame: map  # FIXED: Use map frame instead of odom
-    Background Color: 48; 48; 48
-    Frame Rate: 30
-  Displays:
-  - Name: Grid
-    Class: rviz/Grid
-    Enabled: true
-    Reference Frame: map
-    Plane: XY
-    Color: 160; 160; 164
-    Alpha: 0.5
+# ============================================
+# FastSLAM 2.0 Configuration - FIXED VERSION
+# ============================================
 
-  - Name: TF
-    Class: rviz/TF
-    Enabled: true
-    Show Axes: true
-    Show Names: true
-    Update Interval: 0.1
-    Alpha: 0.8
+# Core algorithm parameters - TUNED for better performance
+particles: 80                    # Reduced for debugging, increase to 120 when working
+resample_neff_ratio: 0.7         # More conservative resampling
+chi2_gate: 7.38                  # Tighter gating (97.5% confidence, reduced from 99%)
+new_landmark_likelihood_min: 0.4  # Higher threshold to reduce spurious landmarks
 
-  # SLAM-specific displays
-  - Name: SLAM Particles
-    Class: rviz/PoseArray
-    Enabled: true
-    Topic: /slam/particles
-    Color: 255; 0; 0  # Red particles
-    Alpha: 0.7
-    Arrow Length: 0.3
-    Axes Length: 0.3
+# Measurement noise (cartesian projection) - REDUCED for better convergence
+meas_noise_xy_x: 0.15            # Reduced from 0.25
+meas_noise_xy_y: 0.15            # Reduced from 0.25
 
-  - Name: SLAM Landmarks (Map)
-    Class: rviz/MarkerArray
-    Enabled: true
-    Marker Topic: /map_markers
-    Queue Size: 10
+# Motion noise - PROPERLY SCALED
+odom_v_std: 0.12                 # Slightly reduced for stability
+odom_yawrate_std: 0.15           # Reduced angular noise
 
-  - Name: SLAM Pose Estimate
-    Class: rviz/PoseWithCovariance
-    Enabled: true
-    Topic: /slam/odom
-    Color: 0; 255; 0  # Green pose estimate
-    Alpha: 0.8
-    Covariance:
-      Orientation Enabled: true
-      Position Enabled: true
+# Frame definitions
+map_frame:   "map"
+odom_frame:  "odom"
+base_frame:  "base_footprint"
+lidar_frame: "lidar"
 
-  # Perception displays
-  - Name: Tracked Cones (Green)
-    Class: rviz/MarkerArray
-    Enabled: true
-    Marker Topic: /cones_markers_tracked
-    Queue Size: 10
+# LiDAR->base extrinsics (CRITICAL - VERIFY THESE!)
+lidar_to_base_x: 0.0             # CHECK: LiDAR position relative to base_footprint
+lidar_to_base_y: 0.0             # CHECK: Usually LiDAR is slightly forward/up
+lidar_to_base_yaw_deg: 0.0       # CHECK: LiDAR orientation relative to robot
 
-  - Name: Raw Cones (Grey)
-    Class: rviz/MarkerArray
-    Enabled: true
-    Marker Topic: /cones_markers_raw
-    Queue Size: 10
+# Topic names
+tracked_topic: "/tracked_cones"
+odom_topic:    "/ekf/odom"
 
-  - Name: LiDAR Scan
-    Class: rviz/LaserScan
-    Enabled: true
-    Topic: /scan
-    Size: 0.03
-    Style: Flat Squares
-    Color Transformer: Intensity
-    Use Rainbow: true
-    Decay Time: 0
+# Publication topics
+pub_particles:     "/slam/particles"
+pub_landmarks:     "/map_markers"
+pub_weights:       "/slam/weights"
+pub_slam_odom:     "/slam/odom"
 
-  # Ground truth for debugging (optional)
-  - Name: Ground Truth Pose
-    Class: rviz/Odometry
-    Enabled: true
-    Topic: /ground_truth/state
-    Keep: 100
-    Color: 255; 255; 0  # Yellow ground truth
-    Alpha: 0.5
-    Covariance:
-      Orientation Enabled: false
-      Position Enabled: false
-    Shaft Length: 0.5
-    Shaft Radius: 0.05
-    Head Length: 0.2
-    Head Radius: 0.1
+# Penalty factors - TUNED for robustness
+miss_in_fov_penalty: 0.7         # Increased penalty
+color_mismatch_penalty: 0.8      # Increased penalty
 
-  # Path trace for debugging
-  - Name: SLAM Path
-    Class: rviz/Path
-    Enabled: false  # Enable manually if needed
-    Topic: /slam/path
-    Color: 0; 255; 0
-    Alpha: 0.8
-    Line Style: Lines
-    Line Width: 0.03
+# DEBUG MODE - set to true for validation with ground truth
+debug_use_ground_truth: false    # Set to true for debugging
 
-Views:
-  Current:
-    Class: rviz/TopDownOrtho
-    Target Frame: map  # FIXED: Follow map frame
-    Scale: 25
-    X: 0
-    Y: 0
-    Angle: 0
+# Advanced parameters for pose refinement
+pose_refinement_enabled: true     # Enable FastSLAM 2.0 pose refinement
+max_pose_correction_m: 0.5       # Maximum pose correction per step
+pose_correction_weight: 0.3      # How aggressively to apply corrections
 
-Tools:
-- Class: rviz/Interact
-- Class: rviz/MoveCamera
-- Class: rviz/Select
-- Class: rviz/Measure
+# Data association parameters
+max_association_distance_m: 1.0  # Maximum distance for landmark association
+min_correspondences_for_refinement: 2  # Minimum matches needed for pose refinement

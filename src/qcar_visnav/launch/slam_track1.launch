@@ -14,51 +14,53 @@
   <node pkg="qcar_visnav" type="cones_viz_node"     name="cone_markers_raw"     output="screen"/>
   <node pkg="qcar_visnav" type="cones_viz_node"     name="cone_markers_tracked" output="screen"/>
 
-  <!-- FastSLAM2 node with DEBUG MODE enabled -->
+  <!-- REMOVED: Static TF publisher for map->odom (FastSLAM will publish this dynamically) -->
+  <!-- <node pkg="tf2_ros" type="static_transform_publisher" name="map_to_odom" args="0 0 0 0 0 0 map odom"/> -->
+
+  <!-- FastSLAM2 node with CORRECTED PARAMETERS -->
   <node pkg="qcar_visnav" type="fastslam2_node" name="fastslam2" output="screen">
-    <!-- Topics -->
-    <param name="tracked_topic" value="/tracked_cones"/>
-    <param name="odom_topic"    value="/ekf/odom"/>
-
-    <!-- Publications -->
-    <param name="pub_particles" value="/slam/particles"/>
-    <param name="pub_landmarks" value="/map_markers"/>
-    <param name="pub_weights"   value="/slam/weights"/>
-    <param name="pub_slam_odom" value="/slam/odom"/>
-
-    <!-- Frames -->
-    <param name="map_frame"   value="map"/>
-    <param name="odom_frame"  value="odom"/>
-    <param name="base_frame"  value="base_footprint"/>
-    <param name="lidar_frame" value="lidar"/>
-
-    <!-- DEBUG MODE: Use ground truth for validation -->
-    <param name="debug_use_ground_truth" value="true"/>
-
-    <!-- Conservative parameters for debugging -->
-    <param name="particles" value="50"/>  <!-- Fewer particles for easier debugging -->
-    <param name="resample_neff_ratio" value="0.8"/>  <!-- Less frequent resampling -->
-    <param name="chi2_gate" value="7.38"/>  <!-- Tighter gating (97.5% confidence) -->
-    <param name="new_landmark_likelihood_min" value="0.3"/>  <!-- Conservative new landmark creation -->
+    <!-- Load fixed configuration -->
+    <rosparam file="$(find qcar_visnav)/config/fastslam2_fixed.yaml" command="load"/>
     
-    <!-- Reduced noise for ground truth validation -->
-    <param name="meas_noise_xy_x" value="0.15"/>
-    <param name="meas_noise_xy_y" value="0.15"/>
-    <param name="odom_v_std" value="0.05"/>       <!-- Very low noise in debug mode -->
-    <param name="odom_yawrate_std" value="0.02"/>
+    <!-- Override key debugging parameters -->
+    <param name="debug_use_ground_truth" value="false"/>  <!-- Set to true for debugging -->
     
-    <!-- Robustness penalties -->
-    <param name="miss_in_fov_penalty" value="0.8"/>
-    <param name="color_mismatch_penalty" value="0.9"/>
-
-    <!-- LiDAR extrinsics - CRITICAL TO VERIFY! -->
+    <!-- CRITICAL: Verify LiDAR extrinsics match your URDF -->
+    <!-- These values MUST match your robot's actual sensor mounting -->
     <param name="lidar_to_base_x" value="0.0"/>
-    <param name="lidar_to_base_y" value="0.0"/>
+    <param name="lidar_to_base_y" value="0.0"/> 
     <param name="lidar_to_base_yaw_deg" value="0.0"/>
+    
+    <!-- Conservative parameters for initial testing -->
+    <param name="particles" value="50"/>  <!-- Start small for debugging -->
+    <param name="chi2_gate" value="5.99"/>  <!-- Very tight gating (95% confidence) -->
+    <param name="new_landmark_likelihood_min" value="0.5"/>  <!-- Conservative landmark creation -->
+    
+    <!-- Reduced noise for debugging -->
+    <param name="odom_v_std" value="0.08"/>       
+    <param name="odom_yawrate_std" value="0.10"/>
+    <param name="meas_noise_xy_x" value="0.12"/>
+    <param name="meas_noise_xy_y" value="0.12"/>
+    
+    <!-- Enable pose refinement (FastSLAM 2.0 key feature) -->
+    <param name="pose_refinement_enabled" value="true"/>
+    <param name="max_pose_correction_m" value="0.3"/>
+    <param name="pose_correction_weight" value="0.2"/>
   </node>
 
-  <!-- RViz with updated config -->
+  <!-- RViz with FastSLAM visualization -->
   <node pkg="rviz" type="rviz" name="rviz"
-        args="-d $(find qcar_visnav)/rviz/viz_fastslam.rviz"/>
+        args="-d $(find qcar_visnav)/rviz/viz_fastslam_fixed.rviz"/>
+
+  <!-- OPTIONAL: Ground truth publisher for debugging -->
+  <node pkg="qcar_visnav" type="ground_truth_publisher" name="ground_truth" output="screen" if="$(arg debug_mode)"/>
 
 </launch>
+
+<!-- Usage Instructions:
+1. First test with debug_use_ground_truth=true to validate coordinate transforms
+2. Check that particles spread around robot pose (not at origin)
+3. Verify landmarks appear near actual cone locations (not at origin)
+4. Gradually increase particle count once basic functionality works
+5. Tune noise parameters based on your specific robot/sensor setup
+-->
