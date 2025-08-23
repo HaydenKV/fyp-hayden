@@ -1,4 +1,41 @@
-// cone_tracker_node.cpp  (global data association via Hungarian algorithm)
+// ============================================================================
+// cone_tracker_node.cpp
+//
+// Global nearest-neighbor assignment (Hungarian) + EKF smoothing of cone detections.
+// - Subscribes:  /cones (qcar_visnav/ConeArray)  — raw detections in LiDAR frame
+// - Publishes:   /tracked_cones (qcar_visnav/ConeArray) — tracked cones in LiDAR frame
+//
+// DESIGN CHOICES (important):
+//   • Internal state space: ODOM. We keep track means/covariances in a fixed world-like frame
+//     (odom) for stable static-landmark filtering.
+//   • I/O frames: Inputs arrive in LiDAR; we transform detections → ODOM for filtering.
+//                 Outputs are converted back to LiDAR and published IN THE LIDAR FRAME
+//                 (polar). This keeps the SLAM front-end consuming LiDAR-frame ConeArray,
+//                 per your preference, while avoiding moving-frame filter instability.
+//
+// DATA FLOW
+//   1) For each detection (r,theta, Σ_rθ) in LiDAR: compute (x,y,Σ_xy) in ODOM via TF.
+//   2) Predict each track with small Q (static landmarks).
+//   3) Build gated Mahalanobis costs and run Hungarian assignment (global NN).
+//   4) Matched → EKF update (H=I). Unmatched detections → new tracks. Unmatched tracks → misses++.
+//   5) Publish CONFIRMED tracks back in LiDAR frame (polar + covariance).
+//
+// PARAMETERS (private ns ~cone_tracker)
+//   detections_topic [string] : input ConeArray (default "/cones")
+//   tracks_topic     [string] : output ConeArray (default "/tracked_cones")
+//   odom_frame       [string] : world-like frame to hold state (default "odom")
+//   base_frame       [string] : kept for compatibility; NOT used for publishing now
+//   gate_chi2        [double] : chi^2(2) gate (e.g. 5.99, 7.38)
+//   init_hits        [int]    : confirm after this many consecutive hits
+//   max_misses       [int]    : drop after this many consecutive misses
+//   init_cov         [double] : initial covariance (m^2)
+//   q_xy             [double] : process noise spectral density (m^2/s) for static jitter
+//   r_scale          [double] : scale factor for detector measurement covariance
+//   max_dt           [double] : cap dt during prediction
+//   debug            [int]    : 0/1 verbosity
+//
+// Author: you (+ minimal code edits to publish in LiDAR + comment upgrades)
+// ============================================================================
 
 #include <ros/ros.h>
 #include <qcar_visnav/ConeArray.h>
@@ -19,6 +56,7 @@
 #include <cstdint>
 #include <algorithm>
 #include <string>
+#include <memory>
 
 // ============================
 // Params (loaded via private namespace)
@@ -27,7 +65,7 @@ struct Params {
   std::string detections_topic{"/cones"};         // input: from cone_detector_node
   std::string tracks_topic{"/tracked_cones"};     // output: confirmed tracks
   std::string odom_frame{"odom"};
-  std::string base_frame{"base_footprint"};
+  std::string base_frame{"base_footprint"};       // kept for compatibility (not used for publishing)
   double chi2_gate{5.99};     // 95% @ 2DOF
   int    init_hits{2};        // promote to confirmed after this many consecutive hits
   int    max_misses{5};       // drop track after this many consecutive misses
@@ -39,10 +77,10 @@ struct Params {
 } P;
 
 // ============================
-// Track structure
+// Track structure (state in ODOM)
 // ============================
 struct Track {
-  Eigen::Vector2d x{Eigen::Vector2d::Zero()};       // state in ODOM: [X,Y]
+  Eigen::Vector2d x{Eigen::Vector2d::Zero()};       // [X,Y] in ODOM
   Eigen::Matrix2d P{Eigen::Matrix2d::Identity()};   // covariance in ODOM
   uint32_t id{0};
   int hits{0};          // consecutive hits
@@ -65,7 +103,7 @@ static std::unique_ptr<tf2_ros::Buffer> tf_buffer;
 static std::unique_ptr<tf2_ros::TransformListener> tf_listener;
 
 // ----------------------------
-// Math helpers
+// Math / TF helpers
 // ----------------------------
 static inline Eigen::Matrix2d Rot2(double yaw) {
   const double c = std::cos(yaw), s = std::sin(yaw);
@@ -112,7 +150,7 @@ static Eigen::Matrix2d cartCovToPolar(const Eigen::Vector2d &p, const Eigen::Mat
   return H * Sxy * H.transpose();
 }
 
-// Transform a 2D point (x,y,0) from src->dst at given stamp; also return yaw
+// Transform a 2D point (x,y,0) from src->dst at given stamp; also return yaw(src->dst)
 static bool transformXY(const Eigen::Vector2d &p_src,
                         const std::string &src_frame,
                         const std::string &dst_frame,
@@ -142,9 +180,7 @@ static bool transformXY(const Eigen::Vector2d &p_src,
 }
 
 // ----------------------------
-// Hungarian algorithm (min-cost assignment)
-// Input: square cost matrix C[n][n]
-// Output: assignment_by_row[i] = j (or -1 if unassigned)
+// Hungarian (min-cost assignment) on a square matrix
 // ----------------------------
 static std::vector<int> hungarian(const std::vector<std::vector<double>>& C,
                                   double unmatched_cost)
@@ -169,7 +205,6 @@ static std::vector<int> hungarian(const std::vector<std::vector<double>>& C,
       int j1 = 0;
 
       for (int j = 1; j <= n; ++j) if (!used[j]) {
-        // cost(i0,j) - u[i0] - v[j]
         double cur = C[i0-1][j-1] - u[i0] - v[j];
         if (cur < minv[j]) { minv[j] = cur; way[j] = j0; }
         if (minv[j] < delta) { delta = minv[j]; j1 = j; }
@@ -196,7 +231,6 @@ static std::vector<int> hungarian(const std::vector<std::vector<double>>& C,
     if (p[j] != 0) {
       int i = p[j] - 1;
       int jj = j - 1;
-      // Treat as unassigned if selected dummy/unmatched cost
       if (C[i][jj] >= unmatched_cost - 1e-9) assignment[i] = -1;
       else assignment[i] = jj;
     }
@@ -212,8 +246,9 @@ void conesCb(const qcar_visnav::ConeArray::ConstPtr &msg)
   const ros::Time stamp = msg->header.stamp;
   const std::string lidar_frame = msg->header.frame_id.empty() ? "lidar" : msg->header.frame_id;
 
-  // TF: lidar -> odom (for detections) and odom -> base (to publish polar from base)
-  geometry_msgs::TransformStamped tf_lidar_odom, tf_odom_base;
+  // TF we need:
+  //  (1) lidar -> odom (to convert detections into ODOM for filtering)
+  geometry_msgs::TransformStamped tf_lidar_odom;
   try {
     tf_lidar_odom = tf_buffer->lookupTransform(P.odom_frame, lidar_frame, stamp, ros::Duration(0.05));
   } catch (const tf2::TransformException &ex) {
@@ -221,16 +256,10 @@ void conesCb(const qcar_visnav::ConeArray::ConstPtr &msg)
                       lidar_frame.c_str(), P.odom_frame.c_str(), ex.what());
     return;
   }
-  double yaw_lidar_to_odom = yawFromTF(tf_lidar_odom);
-
-  try {
-    tf_odom_base = tf_buffer->lookupTransform(P.base_frame, P.odom_frame, stamp, ros::Duration(0.05));
-  } catch (const tf2::TransformException &ex) {
-    ROS_WARN_THROTTLE(1.0, "[cone_tracker] Cannot get TF %s->%s: %s",
-                      P.odom_frame.c_str(), P.base_frame.c_str(), ex.what());
-    return;
-  }
-  double yaw_odom_to_base = yawFromTF(tf_odom_base);
+  const double yaw_lidar_to_odom = yawFromTF(tf_lidar_odom);
+  const Eigen::Matrix2d R_lo = Rot2(yaw_lidar_to_odom);
+  const Eigen::Vector2d t_lo(tf_lidar_odom.transform.translation.x,
+                             tf_lidar_odom.transform.translation.y);
 
   // Build detections in ODOM
   struct Det {
@@ -244,14 +273,17 @@ void conesCb(const qcar_visnav::ConeArray::ConstPtr &msg)
     const double r = c.range, th = c.bearing;
     if (!std::isfinite(r) || !std::isfinite(th)) continue;
 
+    // LiDAR polar -> LiDAR Cartesian
     Eigen::Vector2d p_lidar = polarToXY(r, th);
-    Eigen::Vector2d p_odom; double yaw_tmp = 0.0;
-    if (!transformXY(p_lidar, lidar_frame, P.odom_frame, stamp, p_odom, yaw_tmp)) continue;
 
-    const double r_var = std::max(1e-8, c.r_var) * P.r_scale;
+    // LiDAR -> ODOM: p_odom = R_lo * p_lidar + t_lo
+    Eigen::Vector2d p_odom = R_lo * p_lidar + t_lo;
+
+    // Covariance: polar (LiDAR) -> Cartesian (LiDAR) -> rotate into ODOM
+    const double r_var  = std::max(1e-8, c.r_var) * P.r_scale;
     const double th_var = std::max(1e-8, c.bearing_var) * P.r_scale;
     Eigen::Matrix2d S_lidar = polarCovToCart(r, th, r_var, th_var);
-    Eigen::Matrix2d S_odom  = rotateCov(S_lidar, yaw_lidar_to_odom);
+    Eigen::Matrix2d S_odom  = R_lo * S_lidar * R_lo.transpose();
 
     dets.push_back({ p_odom, S_odom, c.color, c.color_conf, c.id });
   }
@@ -289,7 +321,6 @@ void conesCb(const qcar_visnav::ConeArray::ConstPtr &msg)
       if (std::isfinite(d2) && d2 <= P.chi2_gate) {
         C[i][j] = d2;
       }
-      // else leave as UNMATCHED_COST (i.e., don't force a bad match)
     }
   }
 
@@ -303,7 +334,6 @@ void conesCb(const qcar_visnav::ConeArray::ConstPtr &msg)
   for (int i = 0; i < Nd; ++i) {
     int j = assign[i];
     if (j >= 0 && j < Nt) {
-      // Only accept if within gate (defensive)
       if (C[i][j] < UNMATCHED_COST - 1e-9) {
         pairs.emplace_back(i, j);
         det_used[i] = 1;
@@ -312,14 +342,14 @@ void conesCb(const qcar_visnav::ConeArray::ConstPtr &msg)
     }
   }
 
-  // Update matched tracks
+  // Update matched tracks (EKF with H=I)
   for (const auto &pr : pairs) {
     const int i = pr.first, j = pr.second;
     Track &t = g_tracks[j];
     const auto &d = dets[i];
 
     Eigen::Matrix2d S = t.P + d.R_odom;
-    Eigen::Matrix2d K = t.P * S.inverse();          // H = I
+    Eigen::Matrix2d K = t.P * S.inverse();
     t.x += K * (d.z_odom - t.x);
     t.P  = (Eigen::Matrix2d::Identity() - K) * t.P;
 
@@ -367,26 +397,32 @@ void conesCb(const qcar_visnav::ConeArray::ConstPtr &msg)
                 [](const Track &t){ return t.misses > P.max_misses; }),
                 g_tracks.end());
 
-  // Publish confirmed tracks as ConeArray in BASE frame (polar from base)
+  // ------------------------------------------------------------------------
+  // Publish confirmed tracks as ConeArray IN THE LIDAR FRAME (polar).
+  // We currently have each track in ODOM. Convert to LiDAR at 'stamp':
+  //
+  //   x_lidar = R_lo^T * (x_odom - t_lo)
+  //   P_lidar = R_lo^T *  P_odom * R_lo
+  //
+  // Then convert to (range,bearing) + polar covariance.
+// ------------------------------------------------------------------------
   qcar_visnav::ConeArray out;
   out.header.stamp = stamp;
-  out.header.frame_id = P.base_frame;
-
-  const double yaw_b = yaw_odom_to_base;          // rotation odom->base
-  const Eigen::Matrix2d R_ob = Rot2(yaw_b);
-  const Eigen::Vector2d t_ob(tf_odom_base.transform.translation.x,
-                             tf_odom_base.transform.translation.y);
+  out.header.frame_id = lidar_frame;
 
   size_t n_pub = 0;
+  const Eigen::Matrix2d R_ol = R_lo.transpose();   // ODOM->LiDAR rotation
+
   for (const auto &t : g_tracks) {
     if (!t.confirmed) continue;
 
-    Eigen::Vector2d p_base = R_ob * t.x + t_ob;
-    Eigen::Matrix2d S_base = R_ob * t.P * R_ob.transpose();
+    // ODOM -> LiDAR
+    Eigen::Vector2d p_lidar = R_ol * (t.x - t_lo);
+    Eigen::Matrix2d S_lidar = R_ol * t.P * R_ol.transpose();
 
-    const double r  = std::hypot(p_base.x(), p_base.y());
-    const double th = std::atan2(p_base.y(), p_base.x());
-    Eigen::Matrix2d S_polar = cartCovToPolar(p_base, S_base);
+    const double r  = std::hypot(p_lidar.x(), p_lidar.y());
+    const double th = std::atan2(p_lidar.y(), p_lidar.x());
+    Eigen::Matrix2d S_polar = cartCovToPolar(p_lidar, S_lidar);
 
     qcar_visnav::Cone c;
     c.range = r;
@@ -403,8 +439,8 @@ void conesCb(const qcar_visnav::ConeArray::ConstPtr &msg)
 
   if (P.debug) {
     ROS_INFO_THROTTLE(0.5,
-      "[cone_tracker:HUNG] det=%d matched=%zu new=%d active=%zu confirmed_published=%zu",
-      Nd, pairs.size(), Nd - (int)pairs.size(), g_tracks.size(), n_pub);
+      "[cone_tracker] det=%d matched=%zu new=%d active=%zu published=%zu frame=%s",
+      Nd, pairs.size(), Nd - (int)pairs.size(), g_tracks.size(), n_pub, lidar_frame.c_str());
   }
 
   pub_tracks.publish(out);
@@ -423,7 +459,7 @@ int main(int argc, char** argv)
   pnh.param("detections_topic", P.detections_topic, P.detections_topic);
   pnh.param("tracks_topic",     P.tracks_topic,     P.tracks_topic);
   pnh.param("odom_frame",       P.odom_frame,       P.odom_frame);
-  pnh.param("base_frame",       P.base_frame,       P.base_frame);
+  pnh.param("base_frame",       P.base_frame,       P.base_frame); // not used for publishing
   pnh.param("gate_chi2",        P.chi2_gate,        P.chi2_gate);
   pnh.param("init_hits",        P.init_hits,        P.init_hits);
   pnh.param("max_misses",       P.max_misses,       P.max_misses);
@@ -439,9 +475,8 @@ int main(int argc, char** argv)
   pub_tracks = nh.advertise<qcar_visnav::ConeArray>(P.tracks_topic, 1, false);
   sub_dets   = nh.subscribe<qcar_visnav::ConeArray>(P.detections_topic, 1, &conesCb);
 
-  ROS_INFO("[cone_tracker:HUNG] up. subs='%s' -> pubs='%s', frames: odom='%s' base='%s'",
-           P.detections_topic.c_str(), P.tracks_topic.c_str(),
-           P.odom_frame.c_str(), P.base_frame.c_str());
+  ROS_INFO("[cone_tracker] up. subs='%s' -> pubs='%s', state_frame='%s', out_frame='LiDAR input frame'",
+           P.detections_topic.c_str(), P.tracks_topic.c_str(), P.odom_frame.c_str());
 
   ros::spin();
   return 0;

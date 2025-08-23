@@ -80,4 +80,4 @@ cone_markers_tracked:
   override_color: true
   rgba:          "0.10 1.00 0.10 1.0"   # bright green
   label_mode:    "id"
-  z_offset:      0.03      # lift so tracked cones render above raw
+  z_offset:      0.1      # lift so tracked cones render above raw

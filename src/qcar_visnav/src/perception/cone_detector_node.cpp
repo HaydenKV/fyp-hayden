@@ -1,3 +1,25 @@
+// ============================================================================
+// cone_detector_node.cpp
+//
+// QCar LiDAR-only cone detector (clustering front-end).
+// - Subscribes:  /scan (sensor_msgs/LaserScan)
+// - Publishes:   /cones (qcar_visnav/ConeArray) in the LiDAR frame
+//
+// Pipeline (mode="clustering"):
+//   1) Range gating on LaserScan beams
+//   2) Scan-order segmentation using a range-jump threshold tau(r)=tau0+alpha*r
+//   3) Local Euclidean clustering per segment (small neighborhoods => fast)
+//   4) Cluster centroid -> detection (range,bearing) + covariance
+//
+// Notes:
+// - We publish in the LiDAR frame (header.frame_id) and keep detections in polar
+//   coordinates as expected by the rest of your stack.
+// - Covariance comes from per-beam noise divided by sqrt(N) within the cluster.
+// - Everything is tuned by params in your YAML; no hard-coded topics here.
+//
+// Author: you (+ light comment polish)
+// ============================================================================
+
 #include <ros/ros.h>
 #include <sensor_msgs/LaserScan.h>
 #include <qcar_visnav/ConeArray.h>
@@ -24,17 +46,17 @@ struct Params {
   double max_range{15.0};
 
   // scan-order segmentation (range jump threshold tau(r)=tau0 + alpha*r)
-  double seg_tau0{0.12};     // [m]
+  double seg_tau0{0.12};      // [m]
   double seg_tau_alpha{0.03}; // [m/m]
 
   // local clustering (inside each segment)
-  double eps{0.20};          // [m]
+  double eps{0.20};           // [m]
   int    min_cluster_size{3};
   int    max_cluster_size{50};
 
   // noise (per-beam)
-  double sigma_r{0.07};        // [m]
-  double sigma_theta_deg{0.8}; // [deg]
+  double sigma_r{0.07};         // [m]
+  double sigma_theta_deg{0.8};  // [deg]
 
   int debug_print{0};
 };
@@ -42,6 +64,11 @@ struct Params {
 static Params P;
 static ros::Publisher cones_pub;
 
+// ---------------------------------------------------------------------------
+// Simple segment-local clustering (Euclidean, single-link style).
+// Input: 2D points in segment order
+// Output: cluster index lists
+// ---------------------------------------------------------------------------
 static std::vector<std::vector<int>> clusterIndices(
     const std::vector<Eigen::Vector2d>& pts,
     double eps, int min_sz, int max_sz)
@@ -55,7 +82,7 @@ static std::vector<std::vector<int>> clusterIndices(
   for (int i = 0; i < N; ++i) {
     if (label[i] != -1) continue;
 
-    // seed cluster with i
+    // start a new component from i
     std::vector<int> stack{ i };
     label[i] = cluster_id;
     std::vector<int> members{ i };
@@ -79,13 +106,17 @@ static std::vector<std::vector<int>> clusterIndices(
       clusters.push_back(std::move(members));
       cluster_id++;
     } else {
-      for (int idx : members) label[idx] = -2; // noise
+      // mark discarded points (noise) to avoid reseeding
+      for (int idx : members) label[idx] = -2;
     }
   }
   return clusters;
 }
 
-// Build scan-order segments using a range-jump threshold tau(r) = tau0 + alpha*r
+// ---------------------------------------------------------------------------
+// Build contiguous scan-order segments using a range-jump threshold.
+// We split when |r_i - r_{i-1}| > tau(r) or beam indices are not consecutive.
+// ---------------------------------------------------------------------------
 static std::vector<std::vector<int>> buildSegments(
     const sensor_msgs::LaserScan& scan,
     const std::vector<int>& kept_scan_indices)
@@ -95,7 +126,6 @@ static std::vector<std::vector<int>> buildSegments(
 
   const auto& ranges = scan.ranges;
   auto start_new_segment = [&](int i_prev, int i_cur) -> bool {
-    // if either is invalid, force split
     if (!std::isfinite(ranges[i_prev]) || !std::isfinite(ranges[i_cur])) return true;
     const double r_prev = ranges[i_prev];
     const double r_cur  = ranges[i_cur];
@@ -109,8 +139,7 @@ static std::vector<std::vector<int>> buildSegments(
   for (size_t k = 1; k < kept_scan_indices.size(); ++k) {
     int i_prev = kept_scan_indices[k-1];
     int i_cur  = kept_scan_indices[k];
-    // If non-consecutive beam indices, also split (gap in angle)
-    bool index_gap = (i_cur != i_prev + 1);
+    const bool index_gap = (i_cur != i_prev + 1);
 
     if (index_gap || start_new_segment(i_prev, i_cur)) {
       if (current.size() >= static_cast<size_t>(P.min_cluster_size)) {
@@ -131,20 +160,19 @@ static std::vector<std::vector<int>> buildSegments(
 static void scanCb(const sensor_msgs::LaserScan::ConstPtr& scan)
 {
   if (P.detection_mode != "clustering") {
-    // We only build clustering path now; keep interface stable.
     if (P.debug_print) {
-      ROS_WARN_THROTTLE(2.0, "[cone_detector] detection.mode='%s' not implemented here. No output.",
-                        P.detection_mode.c_str());
+      ROS_WARN_THROTTLE(2.0,
+        "[cone_detector] detection.mode='%s' not implemented here. No output.",
+        P.detection_mode.c_str());
     }
     return;
   }
 
   const double sigma_theta = P.sigma_theta_deg * M_PI / 180.0;
-
   const double a0 = scan->angle_min;
   const double da = scan->angle_increment;
 
-  // 1) Keep valid beams by index (respect gating)
+  // 1) Keep valid beams within range
   std::vector<int> kept_scan_indices;
   kept_scan_indices.reserve(scan->ranges.size());
 
@@ -155,10 +183,10 @@ static void scanCb(const sensor_msgs::LaserScan::ConstPtr& scan)
     kept_scan_indices.push_back(i);
   }
 
-  // 2) Build scan-order segments using range jump rule
+  // 2) Build segments with range-jump rule
   const auto segments = buildSegments(*scan, kept_scan_indices);
 
-  // 3) For each segment, collect XY points and run local clustering
+  // 3) Local clustering per segment and emit ConeArray
   qcar_visnav::ConeArray out;
   out.header.stamp = scan->header.stamp;
   out.header.frame_id = P.lidar_frame.empty() ? scan->header.frame_id : P.lidar_frame;
@@ -166,7 +194,7 @@ static void scanCb(const sensor_msgs::LaserScan::ConstPtr& scan)
   size_t total_pts = 0, total_clusters = 0;
 
   for (const auto& seg : segments) {
-    // project this segment to XY
+    // Project this segment to XY (LiDAR frame)
     std::vector<Eigen::Vector2d> pts;
     pts.reserve(seg.size());
     for (int i : seg) {
@@ -176,10 +204,10 @@ static void scanCb(const sensor_msgs::LaserScan::ConstPtr& scan)
     }
     total_pts += pts.size();
 
-    // local clustering (fast because segments are small)
+    // Euclidean clustering (local)
     const auto clusters = clusterIndices(pts, P.eps, P.min_cluster_size, P.max_cluster_size);
 
-    // convert each cluster to Cone
+    // Convert each cluster to Cone (polar + covariance)
     for (const auto& c : clusters) {
       if (c.empty()) continue;
       Eigen::Vector2d mu(0.0, 0.0);
@@ -198,7 +226,7 @@ static void scanCb(const sensor_msgs::LaserScan::ConstPtr& scan)
       cone.bearing      = bearing;
       cone.r_var        = r_var;
       cone.bearing_var  = th_var;
-      cone.color        = 0;
+      cone.color        = 0;    // unknown (LiDAR-only)
       cone.color_conf   = 0.0;
 
       out.cones.push_back(cone);

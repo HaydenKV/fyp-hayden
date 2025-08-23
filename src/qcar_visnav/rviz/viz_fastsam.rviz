@@ -1,0 +1,32 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+Visualization Manager:
+  Global Options:
+    Fixed Frame: odom
+    Background Color: 48; 48; 48
+  Displays:
+    - Name: Grid
+      Class: rviz/Grid
+      Enabled: true
+    - Name: TF
+      Class: rviz/TF
+      Enabled: true
+    - Name: Map Landmarks
+      Class: rviz/MarkerArray
+      Enabled: true
+      Topic: /map_markers
+    - Name: Tracked Cones (if published as markers)
+      Class: rviz/MarkerArray
+      Enabled: true
+      Topic: /cone_markers_tracked
+    # If your particles are published as markers, use this:
+    - Name: SLAM Particles
+      Class: rviz/MarkerArray
+      Enabled: true
+      Topic: /slam/particles
+    # If particles are PoseArray instead, comment the MarkerArray above and use:
+    # - Name: SLAM Particles
+    #   Class: rviz/PoseArray
+    #   Enabled: true
+    #   Topic: /slam/particles
