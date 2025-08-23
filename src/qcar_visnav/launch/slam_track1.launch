@@ -47,5 +47,5 @@
 
   <!-- RViz pre-configured to subscribe to SLAM topics -->
   <node pkg="rviz" type="rviz" name="rviz"
-        args="-d $(find qcar_visnav)/rviz/perception_track1.rviz"/>
+        args="-d $(find qcar_visnav)/rviz/viz_fastslam.rviz"/>
 </launch>

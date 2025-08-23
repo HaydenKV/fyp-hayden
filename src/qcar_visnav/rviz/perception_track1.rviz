@@ -46,6 +46,9 @@ Visualization Manager:
       Marker Topic: /cones_markers_tracked
       Queue Size: 10
 
+    - Class: rviz/Grid
+      Enabled: true
+
   Tools:
     - Class: rviz/Interact
     - Class: rviz/MoveCamera

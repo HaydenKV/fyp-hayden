@@ -1,0 +1,55 @@
+Panels:
+- Class: rviz/Displays
+  Name: Displays
+- Class: rviz/Views
+  Name: Views
+Visualization Manager:
+  Global Options:
+    Fixed Frame: odom
+    Background Color: 48; 48; 48
+  Displays:
+  - Name: Grid
+    Class: rviz/Grid
+    Enabled: true
+
+  - Name: TF
+    Class: rviz/TF
+    Enabled: true
+
+  - Name: SLAM Particles
+    Class: rviz/PoseArray
+    Enabled: true
+    Topic: /slam/particles
+    Size: 1.0
+
+  - Name: Map Landmarks
+    Class: rviz/MarkerArray
+    Enabled: true
+    Marker Topic: /map_markers
+
+  - Name: Cones (TRACKED)
+    Class: rviz/MarkerArray
+    Enabled: true
+    Marker Topic: /cones_markers_tracked
+    Queue Size: 10
+
+  - Name: Cones (RAW)
+    Class: rviz/MarkerArray
+    Enabled: true
+    Marker Topic: /cones_markers_raw
+    Queue Size: 10  
+
+  - Name: Scan
+    Class: rviz/LaserScan
+    Enabled: true
+    Topic: /scan
+    Size: 0.05
+
+Views:
+  Current:
+    Class: rviz/TopDownOrtho
+    Target Frame: odom
+    Scale: 40
+
+
+

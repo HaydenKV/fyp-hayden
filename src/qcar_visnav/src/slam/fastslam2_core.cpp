@@ -12,6 +12,16 @@
 
 using namespace qcar_visnav::slam;
 
+// Add near the top (tunable floors):
+static constexpr double R_RANGE_VAR_FLOOR  = 0.10 * 0.10;   // (m^2) >= 10 cm std on range in polar domain
+static constexpr double R_BEAR_VAR_FLOOR   = (3.0*M_PI/180.0)*(3.0*M_PI/180.0); // (rad^2) >= 3 deg on bearing
+
+// Cartesian noise inflation (extra safety in odom XY)
+static constexpr double R_CART_INFLATE_XY  = 0.20 * 0.20;   // add 20 cm std^2 on top (per axis)
+
+// New landmark initial covariance (cartesian, generous)
+static constexpr double NEW_LM_INIT_STD    = 0.60;          // 60 cm std per axis
+
 static inline std_msgs::ColorRGBA colorFor(int idx) {
   std_msgs::ColorRGBA c; c.a=0.9f;
   switch (idx % 5) {
@@ -69,6 +79,9 @@ FastSLAM2::FastSLAM2(ros::NodeHandle& nh, ros::NodeHandle& pnh)
   P_.t_bl = Eigen::Vector2d(t_bl_x, t_bl_y);
   P_.yaw_bl = yaw_bl_deg * M_PI / 180.0;
 
+
+
+
   // subs/pubs
   sub_cones_ = nh_.subscribe<qcar_visnav::ConeArray>(P_.topic_tracked, 5, &FastSLAM2::conesCb, this);
   sub_odom_  = nh_.subscribe<nav_msgs::Odometry>(P_.topic_odom, 100, &FastSLAM2::odomCb, this);
@@ -105,15 +118,27 @@ void FastSLAM2::odomCb(const nav_msgs::Odometry::ConstPtr& msg) {
 }
 
 Eigen::Matrix2d FastSLAM2::polarCovToCart(double r, double th, double r_var, double th_var) const {
-  // Jacobian d[x,y]/d[r,th] at (r,th)
+  // Floor polar variances (ConeArray can be too confident or zeros)
+  const double rv  = std::max(R_RANGE_VAR_FLOOR,  r_var);
+  const double tv  = std::max(R_BEAR_VAR_FLOOR,   th_var);
+
+  // Jacobian d[x,y]/d[r,th]
   Eigen::Matrix2d J;
   J << std::cos(th), -r*std::sin(th),
        std::sin(th),  r*std::cos(th);
+
   Eigen::Matrix2d Rp = Eigen::Matrix2d::Zero();
-  Rp(0,0) = std::max(1e-8, r_var);
-  Rp(1,1) = std::max(1e-10, th_var);
-  return J * Rp * J.transpose();
+  Rp(0,0) = rv;
+  Rp(1,1) = tv;
+
+  Eigen::Matrix2d Rxy = J * Rp * J.transpose();
+
+  // Inflate in Cartesian (accounts for tracker model mismatch etc.)
+  Rxy(0,0) += R_CART_INFLATE_XY;
+  Rxy(1,1) += R_CART_INFLATE_XY;
+  return Rxy;
 }
+
 
 Eigen::Vector2d FastSLAM2::lidarPolarToOdomXY(const Eigen::Vector3d& base_pose,
                                                double r, double th) const
@@ -217,7 +242,9 @@ void FastSLAM2::conesCb(const qcar_visnav::ConeArray::ConstPtr& msg) {
         Landmark L;
         L.mu = z_o;
         // start with measurement cov inflated a bit
-        L.Sigma = R_o + Eigen::Matrix2d::Identity() * 0.05;
+        // generous init covariance to favor matching on next frames
+        L.Sigma = Eigen::Matrix2d::Identity() * (NEW_LM_INIT_STD * NEW_LM_INIT_STD);
+
         L.hits = 1; L.misses = 0;
         L.color = (d.color>0 && d.color_conf>0.6) ? d.color : 0;
         L.color_conf = (L.color>0) ? d.color_conf : 0.0;
