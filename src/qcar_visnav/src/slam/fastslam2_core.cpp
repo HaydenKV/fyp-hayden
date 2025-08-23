@@ -5,6 +5,10 @@
 #include "qcar_visnav/slam/data_assoc.h"
 
 #include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2_ros/transform_listener.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <geometry_msgs/TransformStamped.h>
 #include <visualization_msgs/Marker.h>
 #include <std_msgs/ColorRGBA.h>
 #include <cmath>
@@ -12,15 +16,11 @@
 
 using namespace qcar_visnav::slam;
 
-// Add near the top (tunable floors):
-static constexpr double R_RANGE_VAR_FLOOR  = 0.10 * 0.10;   // (m^2) >= 10 cm std on range in polar domain
-static constexpr double R_BEAR_VAR_FLOOR   = (3.0*M_PI/180.0)*(3.0*M_PI/180.0); // (rad^2) >= 3 deg on bearing
-
-// Cartesian noise inflation (extra safety in odom XY)
-static constexpr double R_CART_INFLATE_XY  = 0.20 * 0.20;   // add 20 cm std^2 on top (per axis)
-
-// New landmark initial covariance (cartesian, generous)
-static constexpr double NEW_LM_INIT_STD    = 0.60;          // 60 cm std per axis
+// Constants
+static constexpr double R_RANGE_VAR_FLOOR  = 0.10 * 0.10;   
+static constexpr double R_BEAR_VAR_FLOOR   = (3.0*M_PI/180.0)*(3.0*M_PI/180.0); 
+static constexpr double R_CART_INFLATE_XY  = 0.20 * 0.20;   
+static constexpr double NEW_LM_INIT_STD    = 0.60;          
 
 static inline std_msgs::ColorRGBA colorFor(int idx) {
   std_msgs::ColorRGBA c; c.a=0.9f;
@@ -35,7 +35,7 @@ static inline std_msgs::ColorRGBA colorFor(int idx) {
 }
 
 FastSLAM2::FastSLAM2(ros::NodeHandle& nh, ros::NodeHandle& pnh)
-  : nh_(nh), pnh_(pnh)
+  : nh_(nh), pnh_(pnh), tf_buffer_(ros::Duration(10.0)), tf_listener_(tf_buffer_)
 {
   // topics
   pnh_.param("tracked_topic", P_.topic_tracked, P_.topic_tracked);
@@ -43,6 +43,7 @@ FastSLAM2::FastSLAM2(ros::NodeHandle& nh, ros::NodeHandle& pnh)
   pnh_.param("pub_particles", P_.pub_particles, P_.pub_particles);
   pnh_.param("pub_landmarks", P_.pub_landmarks, P_.pub_landmarks);
   pnh_.param("pub_weights",   P_.pub_weights,   P_.pub_weights);
+  pnh_.param("pub_slam_odom", P_.pub_slam_odom, P_.pub_slam_odom);
 
   // frames
   pnh_.param("map_frame",  P_.map_frame,  P_.map_frame);
@@ -50,6 +51,9 @@ FastSLAM2::FastSLAM2(ros::NodeHandle& nh, ros::NodeHandle& pnh)
   pnh_.param("base_frame", P_.base_frame, P_.base_frame);
   pnh_.param("lidar_frame",P_.lidar_frame,P_.lidar_frame);
 
+  // DEBUG MODE PARAMETER - NEW!
+  pnh_.param("debug_use_ground_truth", debug_use_ground_truth_, false);
+  
   // core params
   int N= P_.particles; pnh_.param("particles", N, N); P_.particles = std::max(1, N);
   pnh_.param("resample_neff_ratio", P_.neff_ratio, P_.neff_ratio);
@@ -62,8 +66,6 @@ FastSLAM2::FastSLAM2(ros::NodeHandle& nh, ros::NodeHandle& pnh)
   P_.meas_noise_xy = Eigen::Vector2d(m0,m1);
 
   double nv=P_.odom_v_std, nw=P_.odom_yawrate_std;
-  // allow legacy vector param [v, yawrate] or separated scalars
-  pnh_.param("odom_noise_vr", nv, nv);
   pnh_.param("odom_v_std", nv, nv);
   pnh_.param("odom_yawrate_std", nw, nw);
   P_.odom_v_std = nv; P_.odom_yawrate_std = nw;
@@ -71,7 +73,7 @@ FastSLAM2::FastSLAM2(ros::NodeHandle& nh, ros::NodeHandle& pnh)
   pnh_.param("miss_in_fov_penalty", P_.miss_in_fov_penalty, P_.miss_in_fov_penalty);
   pnh_.param("color_mismatch_penalty", P_.color_mismatch_penalty, P_.color_mismatch_penalty);
 
-  // simple LiDAR->base 2D extrinsics (optional)
+  // LiDAR->base extrinsics
   double t_bl_x = 0.0, t_bl_y = 0.0, yaw_bl_deg = 0.0;
   pnh_.param("lidar_to_base_x", t_bl_x, t_bl_x);
   pnh_.param("lidar_to_base_y", t_bl_y, t_bl_y);
@@ -79,20 +81,24 @@ FastSLAM2::FastSLAM2(ros::NodeHandle& nh, ros::NodeHandle& pnh)
   P_.t_bl = Eigen::Vector2d(t_bl_x, t_bl_y);
   P_.yaw_bl = yaw_bl_deg * M_PI / 180.0;
 
-
-
-
   // subs/pubs
   sub_cones_ = nh_.subscribe<qcar_visnav::ConeArray>(P_.topic_tracked, 5, &FastSLAM2::conesCb, this);
   sub_odom_  = nh_.subscribe<nav_msgs::Odometry>(P_.topic_odom, 100, &FastSLAM2::odomCb, this);
   pub_particles_ = nh_.advertise<geometry_msgs::PoseArray>(P_.pub_particles, 1, false);
   pub_landmarks_ = nh_.advertise<visualization_msgs::MarkerArray>(P_.pub_landmarks, 1, false);
   pub_weights_   = nh_.advertise<std_msgs::Float32MultiArray>(P_.pub_weights, 1, false);
+  pub_slam_odom_ = nh_.advertise<geometry_msgs::PoseWithCovarianceStamped>(P_.pub_slam_odom, 1, false);
+
+  // ADDED: Ground truth subscriber for debug mode
+  if (debug_use_ground_truth_) {
+    sub_ground_truth_ = nh_.subscribe<nav_msgs::Odometry>("/ground_truth/state", 10, &FastSLAM2::groundTruthCb, this);
+    ROS_WARN("[fastslam2_core] DEBUG MODE: Using ground truth odometry instead of EKF!");
+  }
 
   ROS_INFO_STREAM("[fastslam2_core] topics: tracked="<<P_.topic_tracked
-    << " odom="<<P_.topic_odom<< " pubs=["<<P_.pub_particles<<","<<P_.pub_landmarks<<","<<P_.pub_weights<<"]"
+    << " odom="<<P_.topic_odom<< " pubs=["<<P_.pub_particles<<","<<P_.pub_landmarks<<","<<P_.pub_weights<<","<<P_.pub_slam_odom<<"]"
     << " frames odom="<<P_.odom_frame<<" base="<<P_.base_frame<<" lidar="<<P_.lidar_frame
-    << " particles="<<P_.particles);
+    << " particles="<<P_.particles << " debug_mode=" << debug_use_ground_truth_);
 
   ensureInitParticles();
 }
@@ -101,15 +107,31 @@ void FastSLAM2::ensureInitParticles() {
   if (!particles_.empty()) return;
   particles_.resize(P_.particles);
   const double w = 1.0 / (double)P_.particles;
-  for (auto& p : particles_) { p.pose.setZero(); p.weight = w; p.map.clear(); }
-}
-
-void FastSLAM2::spinOnce() {
-  // All compute is event-driven for now (odom + cones callbacks).
-  // This hook is kept in case we later add time-driven publishing/diag.
+  
+  // Initialize particles with small spread around origin
+  std::normal_distribution<double> noise_xy(0.0, 0.05);  // 5cm initial spread
+  std::normal_distribution<double> noise_yaw(0.0, 0.02); // ~1 degree initial spread
+  
+  for (auto& p : particles_) { 
+    p.pose.x() = noise_xy(gen_);
+    p.pose.y() = noise_xy(gen_);
+    p.pose.z() = noise_yaw(gen_);
+    p.weight = w; 
+    p.map.clear(); 
+  }
+  
+  // Set map initialization flag
+  if (!map_initialized_) {
+    initial_pose_ = Eigen::Vector3d::Zero();  // Map origin at first particle location
+    map_initialized_ = true;
+  }
+  
+  ROS_INFO("[fastslam2_core] Initialized %d particles with small spread", P_.particles);
 }
 
 void FastSLAM2::odomCb(const nav_msgs::Odometry::ConstPtr& msg) {
+  if (debug_use_ground_truth_) return;  // Skip EKF odom in debug mode
+  
   // Store latest for propagation
   last_v_ = msg->twist.twist.linear.x;
   last_yawrate_ = msg->twist.twist.angular.z;
@@ -117,8 +139,28 @@ void FastSLAM2::odomCb(const nav_msgs::Odometry::ConstPtr& msg) {
   have_odom_ = true;
 }
 
+// ADDED: Ground truth callback for debug mode
+void FastSLAM2::groundTruthCb(const nav_msgs::Odometry::ConstPtr& msg) {
+  if (!debug_use_ground_truth_) return;
+  
+  // Extract velocity from ground truth (more reliable than EKF for debugging)
+  last_v_ = msg->twist.twist.linear.x;
+  last_yawrate_ = msg->twist.twist.angular.z;
+  last_odom_stamp_ = msg->header.stamp;
+  have_odom_ = true;
+  
+  // Store ground truth pose for validation
+  ground_truth_pose_.x() = msg->pose.pose.position.x;
+  ground_truth_pose_.y() = msg->pose.pose.position.y;
+  
+  tf2::Quaternion q;
+  tf2::fromMsg(msg->pose.pose.orientation, q);
+  double roll, pitch, yaw;
+  tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
+  ground_truth_pose_.z() = yaw;
+}
+
 Eigen::Matrix2d FastSLAM2::polarCovToCart(double r, double th, double r_var, double th_var) const {
-  // Floor polar variances (ConeArray can be too confident or zeros)
   const double rv  = std::max(R_RANGE_VAR_FLOOR,  r_var);
   const double tv  = std::max(R_BEAR_VAR_FLOOR,   th_var);
 
@@ -133,235 +175,429 @@ Eigen::Matrix2d FastSLAM2::polarCovToCart(double r, double th, double r_var, dou
 
   Eigen::Matrix2d Rxy = J * Rp * J.transpose();
 
-  // Inflate in Cartesian (accounts for tracker model mismatch etc.)
+  // Inflate in Cartesian
   Rxy(0,0) += R_CART_INFLATE_XY;
   Rxy(1,1) += R_CART_INFLATE_XY;
   return Rxy;
 }
 
-
-Eigen::Vector2d FastSLAM2::lidarPolarToOdomXY(const Eigen::Vector3d& base_pose,
-                                               double r, double th) const
+// COMPLETELY REWRITTEN: Proper landmark initialization in MAP frame
+Eigen::Vector2d FastSLAM2::getLandmarkPositionInMap(const Eigen::Vector3d& particle_pose_in_map,
+                                                    double lidar_range, double lidar_bearing) const
 {
-  // LiDAR polar -> LiDAR Cartesian
-  const Eigen::Vector2d p_l(r*std::cos(th), r*std::sin(th));
-  // LiDAR -> Base
-  const Eigen::Matrix2d R_bl = Rot2(P_.yaw_bl);
-  const Eigen::Vector2d p_b = R_bl * p_l + P_.t_bl;
-  // Base -> Odom
-  const Eigen::Matrix2d R_ob = Rot2(base_pose.z());
-  const Eigen::Vector2d p_o = R_ob * p_b + base_pose.head<2>();
-  return p_o;
+  // STEP 1: LiDAR polar → LiDAR Cartesian
+  Eigen::Vector2d cone_in_lidar;
+  cone_in_lidar.x() = lidar_range * std::cos(lidar_bearing);
+  cone_in_lidar.y() = lidar_range * std::sin(lidar_bearing);
+  
+  // STEP 2: LiDAR → Base (apply sensor extrinsics)
+  Eigen::Matrix2d R_base_lidar = Rot2(P_.yaw_bl);
+  Eigen::Vector2d cone_in_base = R_base_lidar * cone_in_lidar + P_.t_bl;
+  
+  // STEP 3: Base → Map (using particle's pose in map frame)
+  // This is the KEY TRANSFORMATION that was missing!
+  Eigen::Matrix2d R_map_base = Rot2(particle_pose_in_map.z());
+  Eigen::Vector2d cone_in_map = R_map_base * cone_in_base + particle_pose_in_map.head<2>();
+  
+  return cone_in_map;  // Landmark in global MAP coordinates
 }
 
 void FastSLAM2::integrateOdom(double stamp_sec) {
   if (!have_odom_) return;
   const double dt = std::max(0.0, stamp_sec - last_odom_stamp_.toSec());
-  if (dt <= 0.0) return;
+  if (dt <= 0.0 || dt > 0.5) return;  // Skip huge dt jumps
 
-  // noise
-  std::normal_distribution<double> Nv(0.0, P_.odom_v_std);
-  std::normal_distribution<double> Nw(0.0, P_.odom_yawrate_std);
+  // IMPROVED: Scale noise with time and add minimum noise floor
+  const double dt_clamped = std::min(dt, 0.2);
+  const double noise_scale = std::sqrt(dt_clamped);
+  
+  std::normal_distribution<double> Nv(0.0, P_.odom_v_std * noise_scale);
+  std::normal_distribution<double> Nw(0.0, P_.odom_yawrate_std * noise_scale);
+
+  // DEBUG MODE: Reduce noise significantly for ground truth validation
+  double noise_reduction = debug_use_ground_truth_ ? 0.1 : 1.0;
 
   for (auto& p : particles_) {
-    double v = last_v_ + Nv(gen_);
-    double w = last_yawrate_ + Nw(gen_);
-    propagate_pose(p.pose, v, w, dt);
+    double v_noisy = last_v_ + Nv(gen_) * noise_reduction;
+    double w_noisy = last_yawrate_ + Nw(gen_) * noise_reduction;
+    propagate_pose(p.pose, v_noisy, w_noisy, dt_clamped);
   }
-  // advance reference
+  
   last_odom_stamp_ = ros::Time(stamp_sec);
 }
 
 void FastSLAM2::conesCb(const qcar_visnav::ConeArray::ConstPtr& msg) {
   if (particles_.empty()) ensureInitParticles();
 
-  // 1) Propagate to measurement time using last odom
+  // 1) Propagate particles to measurement time
   integrateOdom(msg->header.stamp.toSec());
 
-  // 2) Build detections (LiDAR polar)
-  struct Det { double r, th, r_var, th_var; int color; double color_conf; };
-  std::vector<Det> dets; dets.reserve(msg->cones.size());
-  for (const auto& c : msg->cones) {
-    if (!std::isfinite(c.range) || !std::isfinite(c.bearing)) continue;
-    dets.push_back({c.range, c.bearing, std::max(1e-8,c.r_var), std::max(1e-10,c.bearing_var),
-                    (int)c.color, c.color_conf});
+  // 2) Parse cone observations
+  struct Detection { 
+    double range, bearing, r_var, bearing_var; 
+    int color; 
+    double color_conf; 
+  };
+  
+  std::vector<Detection> detections;
+  detections.reserve(msg->cones.size());
+  
+  for (const auto& cone : msg->cones) {
+    if (!std::isfinite(cone.range) || !std::isfinite(cone.bearing)) continue;
+    if (cone.range < 0.1 || cone.range > 20.0) continue;  // Sanity check
+    
+    detections.push_back({
+      cone.range, cone.bearing,
+      std::max(1e-8, cone.r_var), std::max(1e-10, cone.bearing_var),
+      (int)cone.color, cone.color_conf
+    });
   }
-  if (dets.empty()) return;
+  
+  if (detections.empty()) {
+    ROS_DEBUG("[fastslam2_core] No valid cone detections");
+    return;
+  }
 
-  // 3) Per-particle update & weight increment
-  double max_logw = -1e100;
-  std::vector<double> logw(particles_.size(), 0.0);
+  // 3) FastSLAM 2.0 Update - COMPLETELY REWRITTEN for proper coordinate handling
+  std::vector<double> log_weights(particles_.size(), 0.0);
+  double max_log_weight = -1e100;
 
-  for (size_t ip=0; ip<particles_.size(); ++ip) {
-    auto& Pk = particles_[ip];
+  for (size_t particle_idx = 0; particle_idx < particles_.size(); ++particle_idx) {
+    auto& particle = particles_[particle_idx];
+    
+    // Collect existing landmark positions and covariances for association
+    std::vector<Eigen::Vector2d> landmark_positions;
+    std::vector<Eigen::Matrix2d> landmark_covariances;
+    landmark_positions.reserve(particle.map.size());
+    landmark_covariances.reserve(particle.map.size());
+    
+    for (const auto& landmark : particle.map) {
+      landmark_positions.push_back(landmark.mu);
+      landmark_covariances.push_back(landmark.Sigma);
+    }
 
-    // collect landmark means/covs for association
-    std::vector<Eigen::Vector2d> mus; mus.reserve(Pk.map.size());
-    std::vector<Eigen::Matrix2d> covs; covs.reserve(Pk.map.size());
-    for (const auto& lm : Pk.map) { mus.push_back(lm.mu); covs.push_back(lm.Sigma); }
+    int successful_associations = 0;
 
-    int matched = 0;
+    // Process each cone detection
+    for (const auto& detection : detections) {
+      // CRITICAL FIX: Transform detection to MAP frame using particle's pose
+      Eigen::Vector2d landmark_pos_in_map = getLandmarkPositionInMap(
+        particle.pose, detection.range, detection.bearing
+      );
+      
+      // Convert polar covariance to Cartesian in MAP frame
+      Eigen::Matrix2d measurement_cov = polarCovToCart(
+        detection.range, detection.bearing, 
+        detection.r_var, detection.bearing_var
+      );
 
-    for (const auto& d : dets) {
-      // detection in ODOM using particle pose
-      const Eigen::Vector2d z_o = lidarPolarToOdomXY(Pk.pose, d.r, d.th);
-      const Eigen::Matrix2d R_o = polarCovToCart(d.r, d.th, d.r_var, d.th_var);
+      // Data association in MAP frame (C++11 compatible)
+      auto association_result = nn_gated(
+        landmark_positions, landmark_covariances, 
+        landmark_pos_in_map, measurement_cov, P_.chi2_gate
+      );
+      int associated_idx = association_result.first;
+      double mahalanobis_dist = association_result.second;
 
-      // NN + gate
-      auto [j, d2] = nn_gated(mus, covs, z_o, R_o, P_.chi2_gate);
+      if (associated_idx >= 0) {
+        // UPDATE EXISTING LANDMARK
+        auto& landmark = particle.map[associated_idx];
+        
+        // EKF update in MAP frame (H = Identity)
+        ekf_update_landmark(landmark.mu, landmark.Sigma, landmark_pos_in_map, measurement_cov);
+        
+        landmark.hits = std::min(landmark.hits + 1, 1000000);
+        landmark.misses = 0;
 
-      // likelihood increment (log domain), basic Gaussian with H=I
-      auto log_gauss = [&](double d2v, const Eigen::Matrix2d& S){
-        double logdet = std::log(std::max(1e-12, S.determinant()));
-        return -0.5*(d2v + std::log( (2*M_PI)*(2*M_PI) ) + logdet);
-      };
-
-      if (j >= 0) {
-        // update landmark j
-        ekf_update_landmark(Pk.map[j].mu, Pk.map[j].Sigma, z_o, R_o);
-        Pk.map[j].hits = std::min(Pk.map[j].hits+1, 1000000);
-        Pk.map[j].misses = 0;
-
-        // weight increment by innovation likelihood (using post S ~ Sigma+R)
-        const Eigen::Matrix2d S = Pk.map[j].Sigma + R_o;
-        logw[ip] += log_gauss(d2, S);
-
-        // optional color penalty if color known & mismatched
-        if (d.color > 0 && Pk.map[j].color > 0 && d.color != Pk.map[j].color) {
-          logw[ip] += std::log(std::max(1e-6, P_.color_mismatch_penalty));
-        } else if (Pk.map[j].color == 0 && d.color > 0 && d.color_conf > 0.6) {
-          // adopt color on first confident observation
-          Pk.map[j].color = d.color;
-          Pk.map[j].color_conf = d.color_conf;
+        // Weight update using innovation likelihood
+        Eigen::Vector2d innovation = landmark_pos_in_map - landmark.mu;
+        Eigen::Matrix2d innovation_cov = landmark.Sigma + measurement_cov;
+        
+        // Gaussian likelihood (log domain)
+        double det = innovation_cov.determinant();
+        if (det > 1e-12) {
+          double log_likelihood = -0.5 * (
+            innovation.transpose() * innovation_cov.inverse() * innovation + 
+            std::log(2.0 * M_PI * det)
+          );
+          log_weights[particle_idx] += log_likelihood;
         }
 
-        ++matched;
+        // Color consistency bonus/penalty
+        if (detection.color > 0 && landmark.color > 0) {
+          if (detection.color == landmark.color) {
+            log_weights[particle_idx] += std::log(1.2);  // Small bonus
+          } else {
+            log_weights[particle_idx] += std::log(P_.color_mismatch_penalty);
+          }
+        } else if (landmark.color == 0 && detection.color > 0 && detection.color_conf > 0.6) {
+          landmark.color = detection.color;
+          landmark.color_conf = detection.color_conf;
+        }
+
+        ++successful_associations;
+        
       } else {
-        // no association -> maybe new landmark if likelihood low enough elsewhere
-        // initialize new landmark with z_o and a reasonable initial covariance
-        Landmark L;
-        L.mu = z_o;
-        // start with measurement cov inflated a bit
-        // generous init covariance to favor matching on next frames
-        L.Sigma = Eigen::Matrix2d::Identity() * (NEW_LM_INIT_STD * NEW_LM_INIT_STD);
-
-        L.hits = 1; L.misses = 0;
-        L.color = (d.color>0 && d.color_conf>0.6) ? d.color : 0;
-        L.color_conf = (L.color>0) ? d.color_conf : 0.0;
-        Pk.map.push_back(L);
-
-        // expand association arrays for consistency
-        mus.push_back(L.mu);
-        covs.push_back(L.Sigma);
-
-        // give a conservative likelihood bump for accepted new LM
-        logw[ip] += std::log(std::max(1e-6, P_.new_lm_lik_min));
+        // CREATE NEW LANDMARK - FIXED coordinate frame
+        Landmark new_landmark;
+        new_landmark.mu = landmark_pos_in_map;  // Position in MAP frame
+        new_landmark.Sigma = Eigen::Matrix2d::Identity() * (NEW_LM_INIT_STD * NEW_LM_INIT_STD);
+        new_landmark.hits = 1;
+        new_landmark.misses = 0;
+        new_landmark.color = (detection.color > 0 && detection.color_conf > 0.6) ? detection.color : 0;
+        new_landmark.color_conf = new_landmark.color > 0 ? detection.color_conf : 0.0;
+        
+        particle.map.push_back(new_landmark);
+        
+        // Update association arrays for future detections in this particle
+        landmark_positions.push_back(new_landmark.mu);
+        landmark_covariances.push_back(new_landmark.Sigma);
+        
+        // Conservative likelihood for new landmarks
+        log_weights[particle_idx] += std::log(std::max(1e-6, P_.new_lm_lik_min));
       }
     }
 
-    // mild penalty if too few associations (robustness)
-    if (matched == 0) {
-      logw[ip] += std::log(std::max(1e-6, P_.miss_in_fov_penalty));
+    // Penalty for poor association performance
+    if (successful_associations == 0 && !detections.empty()) {
+      log_weights[particle_idx] += std::log(std::max(1e-6, P_.miss_in_fov_penalty));
     }
 
-    max_logw = std::max(max_logw, logw[ip]);
+    max_log_weight = std::max(max_log_weight, log_weights[particle_idx]);
   }
 
-  // 4) Normalize weights (prevent underflow with log-max trick)
-  double sumw = 0.0;
-  for (size_t i=0;i<particles_.size();++i) {
-    particles_[i].weight *= std::exp(logw[i] - max_logw);
-    sumw += particles_[i].weight;
+  // 4) Normalize weights (prevent numerical underflow)
+  double total_weight = 0.0;
+  for (size_t i = 0; i < particles_.size(); ++i) {
+    particles_[i].weight *= std::exp(log_weights[i] - max_log_weight);
+    total_weight += particles_[i].weight;
   }
-  if (sumw <= 0.0) { // fallback
-    const double w = 1.0 / (double)particles_.size();
-    for (auto& p: particles_) p.weight = w;
+  
+  if (total_weight <= 1e-12) {
+    // Fallback: uniform weights
+    const double uniform_weight = 1.0 / particles_.size();
+    for (auto& p : particles_) p.weight = uniform_weight;
   } else {
-    for (auto& p: particles_) p.weight /= sumw;
+    // Normalize
+    for (auto& p : particles_) p.weight /= total_weight;
   }
 
-  // 5) Resample if Neff low
-  const double Neff = neff(particles_);
-  if (Neff < P_.neff_ratio * particles_.size()) {
+  // 5) Resampling
+  const double effective_particles = neff(particles_);
+  if (effective_particles < P_.neff_ratio * particles_.size()) {
     particles_ = systematic_resample(particles_, gen_);
+    ROS_DEBUG("[fastslam2_core] Resampled: Neff=%.1f < %.1f", 
+              effective_particles, P_.neff_ratio * particles_.size());
   }
 
-  // 6) Publish visuals
+  // 6) Publish all outputs
   publishParticles(msg->header.stamp);
   publishLandmarks(msg->header.stamp);
   publishWeights(msg->header.stamp);
+  publishSlamOdom(msg->header.stamp);
+  publishMapToOdomTF(msg->header.stamp);
+  
+  // DEBUG: Print diagnostics
+  if (debug_use_ground_truth_ && particles_.size() > 0) {
+    Eigen::Vector3d estimated_pose = getWeightedMeanPose();
+    ROS_INFO_THROTTLE(1.0, "[DEBUG] GT: (%.2f,%.2f,%.1f°) Est: (%.2f,%.2f,%.1f°) Landmarks: %zu", 
+                      ground_truth_pose_.x(), ground_truth_pose_.y(), ground_truth_pose_.z()*180/M_PI,
+                      estimated_pose.x(), estimated_pose.y(), estimated_pose.z()*180/M_PI,
+                      particles_[getBestParticleIndex()].map.size());
+  }
+}
+
+void FastSLAM2::spinOnce() {
+  // All computation is event-driven (callbacks), so this is just a hook
+  // for potential future time-driven publishing/diagnostics
+}
+
+int FastSLAM2::getBestParticleIndex() const {
+  int best_idx = 0;
+  double best_weight = -1.0;
+  for (int i = 0; i < (int)particles_.size(); ++i) {
+    if (particles_[i].weight > best_weight) {
+      best_weight = particles_[i].weight;
+      best_idx = i;
+    }
+  }
+  return best_idx;
+}
+
+Eigen::Vector3d FastSLAM2::getWeightedMeanPose() const {
+  Eigen::Vector3d mean_pose = Eigen::Vector3d::Zero();
+  double total_weight = 0.0;
+  double sum_cos = 0.0, sum_sin = 0.0;
+  
+  for (const auto& particle : particles_) {
+    mean_pose.head<2>() += particle.weight * particle.pose.head<2>();
+    sum_cos += particle.weight * std::cos(particle.pose.z());
+    sum_sin += particle.weight * std::sin(particle.pose.z());
+    total_weight += particle.weight;
+  }
+  
+  if (total_weight > 1e-12) {
+    mean_pose.head<2>() /= total_weight;
+    mean_pose.z() = std::atan2(sum_sin / total_weight, sum_cos / total_weight);
+  }
+  
+  return mean_pose;
+}
+
+void FastSLAM2::publishSlamOdom(const ros::Time& t) {
+  if (!pub_slam_odom_) return;
+  
+  Eigen::Vector3d pose_estimate = getWeightedMeanPose();
+  
+  geometry_msgs::PoseWithCovarianceStamped slam_pose;
+  slam_pose.header.stamp = t;
+  slam_pose.header.frame_id = P_.map_frame;
+  
+  slam_pose.pose.pose.position.x = pose_estimate.x();
+  slam_pose.pose.pose.position.y = pose_estimate.y();
+  slam_pose.pose.pose.position.z = 0.0;
+  
+  tf2::Quaternion q;
+  q.setRPY(0, 0, pose_estimate.z());
+  slam_pose.pose.pose.orientation = tf2::toMsg(q);
+  
+  // Compute covariance from particle spread
+  Eigen::Matrix3d pose_cov = Eigen::Matrix3d::Zero();
+  double total_weight = 0.0;
+  
+  for (const auto& p : particles_) {
+    Eigen::Vector3d diff = p.pose - pose_estimate;
+    // Handle angle wraparound
+    while (diff.z() >  M_PI) diff.z() -= 2*M_PI;
+    while (diff.z() < -M_PI) diff.z() += 2*M_PI;
+    
+    pose_cov += p.weight * (diff * diff.transpose());
+    total_weight += p.weight;
+  }
+  
+  if (total_weight > 1e-12) {
+    pose_cov /= total_weight;
+  } else {
+    pose_cov = Eigen::Matrix3d::Identity() * 0.01;
+  }
+  
+  // Fill 6x6 covariance matrix
+  for (int i = 0; i < 6; ++i) {
+    for (int j = 0; j < 6; ++j) {
+      if (i < 3 && j < 3) {
+        slam_pose.pose.covariance[i*6 + j] = pose_cov(i, j);
+      } else {
+        slam_pose.pose.covariance[i*6 + j] = (i == j) ? 1e-6 : 0.0;
+      }
+    }
+  }
+  
+  pub_slam_odom_.publish(slam_pose);
+}
+
+void FastSLAM2::publishMapToOdomTF(const ros::Time& t) {
+  // Get current robot pose estimate in map frame
+  Eigen::Vector3d robot_pose_map = getWeightedMeanPose();
+  
+  // For Block 5: publish identity transform (refined in Block 6)
+  // In a proper implementation, this would be: T_map_odom = T_map_base * T_base_odom^-1
+  geometry_msgs::TransformStamped transform;
+  transform.header.stamp = t;
+  transform.header.frame_id = P_.map_frame;
+  transform.child_frame_id = P_.odom_frame;
+  
+  // Identity transform for now
+  transform.transform.translation.x = 0.0;
+  transform.transform.translation.y = 0.0;
+  transform.transform.translation.z = 0.0;
+  transform.transform.rotation.x = 0.0;
+  transform.transform.rotation.y = 0.0;
+  transform.transform.rotation.z = 0.0;
+  transform.transform.rotation.w = 1.0;
+  
+  tf_broadcaster_.sendTransform(transform);
 }
 
 void FastSLAM2::publishParticles(const ros::Time& t) {
-  geometry_msgs::PoseArray pa;
-  pa.header.stamp = t;
-  pa.header.frame_id = P_.odom_frame;
-  pa.poses.reserve(particles_.size());
-  for (const auto& p : particles_) {
+  geometry_msgs::PoseArray pose_array;
+  pose_array.header.stamp = t;
+  pose_array.header.frame_id = P_.map_frame;  // Particles in MAP frame
+  pose_array.poses.reserve(particles_.size());
+  
+  for (const auto& particle : particles_) {
     geometry_msgs::Pose pose;
-    pose.position.x = p.pose.x();
-    pose.position.y = p.pose.y();
+    pose.position.x = particle.pose.x();
+    pose.position.y = particle.pose.y();
     pose.position.z = 0.0;
-    const double cy = std::cos(p.pose.z()*0.5), sy = std::sin(p.pose.z()*0.5);
-    pose.orientation.w = cy;
-    pose.orientation.x = 0.0;
-    pose.orientation.y = 0.0;
-    pose.orientation.z = sy;
-    pa.poses.push_back(pose);
+    
+    tf2::Quaternion q;
+    q.setRPY(0, 0, particle.pose.z());
+    pose.orientation = tf2::toMsg(q);
+    
+    pose_array.poses.push_back(pose);
   }
-  if (pub_particles_) pub_particles_.publish(pa);
+  
+  if (pub_particles_) pub_particles_.publish(pose_array);
+}
+
+void FastSLAM2::publishLandmarks(const ros::Time& t) {
+  int best_particle = getBestParticleIndex();
+  const auto& landmark_map = particles_[best_particle].map;
+
+  visualization_msgs::MarkerArray marker_array;
+  
+  // Clear previous markers
+  visualization_msgs::Marker delete_marker;
+  delete_marker.header.stamp = t;
+  delete_marker.header.frame_id = P_.map_frame;  // MAP frame
+  delete_marker.ns = "slam_landmarks";
+  delete_marker.id = 0;
+  delete_marker.action = visualization_msgs::Marker::DELETEALL;
+  marker_array.markers.push_back(delete_marker);
+
+  // Create landmark markers
+  for (size_t i = 0; i < landmark_map.size(); ++i) {
+    const auto& landmark = landmark_map[i];
+    
+    visualization_msgs::Marker marker;
+    marker.header.stamp = t;
+    marker.header.frame_id = P_.map_frame;  // MAP frame
+    marker.ns = "slam_landmarks";
+    marker.id = i + 1;
+    marker.type = visualization_msgs::Marker::SPHERE;
+    marker.action = visualization_msgs::Marker::ADD;
+    
+    marker.pose.position.x = landmark.mu.x();
+    marker.pose.position.y = landmark.mu.y();
+    marker.pose.position.z = 0.1;  // Lift above ground
+    marker.pose.orientation.w = 1.0;
+    
+    marker.scale.x = 0.25;
+    marker.scale.y = 0.25;
+    marker.scale.z = 0.25;
+    
+    marker.color = colorFor(landmark.color > 0 ? landmark.color : (int)i);
+    marker.lifetime = ros::Duration(0.0);
+    
+    marker_array.markers.push_back(marker);
+  }
+
+  if (pub_landmarks_) pub_landmarks_.publish(marker_array);
 }
 
 void FastSLAM2::publishWeights(const ros::Time& t) {
   if (!pub_weights_) return;
-  std_msgs::Float32MultiArray msg;
-  msg.layout.dim.resize(1);
-  msg.layout.dim[0].label = "weights";
-  msg.layout.dim[0].size = particles_.size();
-  msg.layout.dim[0].stride = particles_.size();
-  msg.data.reserve(particles_.size());
-  for (const auto& p : particles_) msg.data.push_back(static_cast<float>(p.weight));
-  pub_weights_.publish(msg);
-}
-
-void FastSLAM2::publishLandmarks(const ros::Time& t) {
-  // Use highest-weight particle's map for visualization
-  int best = 0; double bestw = -1.0;
-  for (int i=0;i<(int)particles_.size();++i) if (particles_[i].weight > bestw) { bestw = particles_[i].weight; best = i; }
-  const auto& M = particles_[best].map;
-
-  visualization_msgs::MarkerArray arr;
-  // delete-all to keep RViz tidy
-  {
-    visualization_msgs::Marker m;
-    m.header.stamp = t;
-    m.header.frame_id = P_.odom_frame;
-    m.ns = "landmarks";
-    m.id = 0;
-    m.action = visualization_msgs::Marker::DELETEALL;
-    arr.markers.push_back(m);
+  
+  std_msgs::Float32MultiArray weight_msg;
+  weight_msg.layout.dim.resize(1);
+  weight_msg.layout.dim[0].label = "particle_weights";
+  weight_msg.layout.dim[0].size = particles_.size();
+  weight_msg.layout.dim[0].stride = particles_.size();
+  weight_msg.data.reserve(particles_.size());
+  
+  for (const auto& particle : particles_) {
+    weight_msg.data.push_back(static_cast<float>(particle.weight));
   }
-
-  // spheres
-  int id = 1;
-  for (size_t i=0;i<M.size(); ++i) {
-    const auto& lm = M[i];
-    visualization_msgs::Marker s;
-    s.header.stamp = t;
-    s.header.frame_id = P_.odom_frame;
-    s.ns = "landmarks";
-    s.id = id++;
-    s.type = visualization_msgs::Marker::SPHERE;
-    s.action = visualization_msgs::Marker::ADD;
-    s.pose.position.x = lm.mu.x();
-    s.pose.position.y = lm.mu.y();
-    s.pose.position.z = 0.05;
-    s.pose.orientation.w = 1.0;
-    s.scale.x = 0.24; s.scale.y = 0.24; s.scale.z = 0.24;
-    s.color = colorFor(lm.color>0 ? lm.color : (int)i);
-    s.lifetime = ros::Duration(0.0);
-    arr.markers.push_back(s);
-  }
-
-  if (pub_landmarks_) pub_landmarks_.publish(arr);
+  
+  pub_weights_.publish(weight_msg);
 }

@@ -1,25 +1,8 @@
-#particles: 120
-#motion_noise:
- # q_vx: 0.15
- # q_vy: 0.10
-  #q_r: 0.05
-#measurement_noise:
-  #sigma_r: 0.07
- # sigma_theta_deg: 0.8
- # chi2_gate: 5.99
-#frames:
- # map_frame: map
-#  odom_frame: odom
-#  base_frame: base_link
- # lidar_frame: lidar
-#topics:
-  #odom_topic: /ekf/odom
-  #cones_topic: /cones
-  #slam_odom_topic: /slam/odom
-  #particles_topic: /slam/particles
-  #map_markers_topic: /map_markers
+# ============================================
+# FastSLAM 2.0 Configuration - Block 5 Fixed
+# ============================================
 
-# Core
+# Core algorithm parameters
 particles: 120
 resample_neff_ratio: 0.6
 chi2_gate: 9.21
@@ -29,63 +12,31 @@ new_landmark_likelihood_min: 0.25
 meas_noise_xy_x: 0.25
 meas_noise_xy_y: 0.25
 
-# Odom noise (linear m/s, yawrate rad/s)
-odom_noise_vr: 0.15            # legacy support
+# Odom noise (linear m/s, yawrate rad/s) - FIXED: consistent naming
 odom_v_std: 0.15
 odom_yawrate_std: 0.20
 
-# Frames
+# Frame definitions
 map_frame:   "map"
 odom_frame:  "odom"
 base_frame:  "base_footprint"
 lidar_frame: "lidar"
 
-# LiDAR->base extrinsics (2D)
+# LiDAR->base extrinsics (2D) - CHECK THESE VALUES!
 lidar_to_base_x: 0.0
 lidar_to_base_y: 0.0
 lidar_to_base_yaw_deg: 0.0
 
-# Topics
+# Topic names
 tracked_topic: "/tracked_cones"
 odom_topic:    "/ekf/odom"
 
-# Publications
+# Publication topics
 pub_particles:     "/slam/particles"
 pub_landmarks:     "/map_markers"
 pub_weights:       "/slam/weights"
+pub_slam_odom:     "/slam/odom"        # ADDED: Robot pose estimate
 
-# Penalties
+# Penalty factors for robust operation
 miss_in_fov_penalty: 0.5
 color_mismatch_penalty: 0.7
-
-# association + resampling
-chi2_gate: 16.0
-resample_neff_ratio: 0.6
-
-# measurement noise (cartesian fallback/inflation used above)
-meas_noise_xy_x: 0.25    # keep as is (we also add +0.20^2 inside)
-meas_noise_xy_y: 0.25
-
-# odom noise – leave as you had unless particles diverge
-odom_v_std: 0.15
-odom_yawrate_std: 0.2
-
-# penalties
-miss_in_fov_penalty: 0.6
-color_mismatch_penalty: 0.8
-
-# new landmark likelihood – conservative
-new_landmark_likelihood_min: 0.2
-
-# LiDAR→base extrinsics (check these!)
-lidar_to_base_x: 0.0
-lidar_to_base_y: 0.0
-lidar_to_base_yaw_deg: 0.0     # set to your actual mounting yaw if not zero
-
-
-
-
-
-
-
-

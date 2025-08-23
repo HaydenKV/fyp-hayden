@@ -5,51 +5,112 @@ Panels:
   Name: Views
 Visualization Manager:
   Global Options:
-    Fixed Frame: odom
+    Fixed Frame: map  # FIXED: Use map frame instead of odom
     Background Color: 48; 48; 48
+    Frame Rate: 30
   Displays:
   - Name: Grid
     Class: rviz/Grid
     Enabled: true
+    Reference Frame: map
+    Plane: XY
+    Color: 160; 160; 164
+    Alpha: 0.5
 
   - Name: TF
     Class: rviz/TF
     Enabled: true
+    Show Axes: true
+    Show Names: true
+    Update Interval: 0.1
+    Alpha: 0.8
 
+  # SLAM-specific displays
   - Name: SLAM Particles
     Class: rviz/PoseArray
     Enabled: true
     Topic: /slam/particles
-    Size: 1.0
+    Color: 255; 0; 0  # Red particles
+    Alpha: 0.7
+    Arrow Length: 0.3
+    Axes Length: 0.3
 
-  - Name: Map Landmarks
+  - Name: SLAM Landmarks (Map)
     Class: rviz/MarkerArray
     Enabled: true
     Marker Topic: /map_markers
+    Queue Size: 10
 
-  - Name: Cones (TRACKED)
+  - Name: SLAM Pose Estimate
+    Class: rviz/PoseWithCovariance
+    Enabled: true
+    Topic: /slam/odom
+    Color: 0; 255; 0  # Green pose estimate
+    Alpha: 0.8
+    Covariance:
+      Orientation Enabled: true
+      Position Enabled: true
+
+  # Perception displays
+  - Name: Tracked Cones (Green)
     Class: rviz/MarkerArray
     Enabled: true
     Marker Topic: /cones_markers_tracked
     Queue Size: 10
 
-  - Name: Cones (RAW)
+  - Name: Raw Cones (Grey)
     Class: rviz/MarkerArray
     Enabled: true
     Marker Topic: /cones_markers_raw
-    Queue Size: 10  
+    Queue Size: 10
 
-  - Name: Scan
+  - Name: LiDAR Scan
     Class: rviz/LaserScan
     Enabled: true
     Topic: /scan
-    Size: 0.05
+    Size: 0.03
+    Style: Flat Squares
+    Color Transformer: Intensity
+    Use Rainbow: true
+    Decay Time: 0
+
+  # Ground truth for debugging (optional)
+  - Name: Ground Truth Pose
+    Class: rviz/Odometry
+    Enabled: true
+    Topic: /ground_truth/state
+    Keep: 100
+    Color: 255; 255; 0  # Yellow ground truth
+    Alpha: 0.5
+    Covariance:
+      Orientation Enabled: false
+      Position Enabled: false
+    Shaft Length: 0.5
+    Shaft Radius: 0.05
+    Head Length: 0.2
+    Head Radius: 0.1
+
+  # Path trace for debugging
+  - Name: SLAM Path
+    Class: rviz/Path
+    Enabled: false  # Enable manually if needed
+    Topic: /slam/path
+    Color: 0; 255; 0
+    Alpha: 0.8
+    Line Style: Lines
+    Line Width: 0.03
 
 Views:
   Current:
     Class: rviz/TopDownOrtho
-    Target Frame: odom
-    Scale: 40
+    Target Frame: map  # FIXED: Follow map frame
+    Scale: 25
+    X: 0
+    Y: 0
+    Angle: 0
 
-
-
+Tools:
+- Class: rviz/Interact
+- Class: rviz/MoveCamera
+- Class: rviz/Select
+- Class: rviz/Measure

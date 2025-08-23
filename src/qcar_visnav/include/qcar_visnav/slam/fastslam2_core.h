@@ -1,10 +1,14 @@
 #pragma once
 #include <ros/ros.h>
 #include <nav_msgs/Odometry.h>
+#include <geometry_msgs/PoseWithCovarianceStamped.h>
 #include <visualization_msgs/MarkerArray.h>
 #include <geometry_msgs/PoseArray.h>
 #include <std_msgs/Float32MultiArray.h>
 #include <qcar_visnav/ConeArray.h>
+#include <tf2_ros/transform_broadcaster.h>
+#include <tf2_ros/transform_listener.h>
+#include <tf2_ros/buffer.h>
 #include <random>
 #include "types.h"
 
@@ -17,7 +21,8 @@ struct FS2Params {
   std::string topic_odom{"/ekf/odom"};
   std::string pub_particles{"/slam/particles"};
   std::string pub_landmarks{"/map_markers"};
-  std::string pub_weights{"/slam/weights"}; // optional
+  std::string pub_weights{"/slam/weights"}; 
+  std::string pub_slam_odom{"/slam/odom"};  // ADDED: SLAM pose output
 
   // frames/extrinsics
   std::string map_frame{"map"};
@@ -56,6 +61,7 @@ private:
   // callbacks
   void conesCb(const qcar_visnav::ConeArray::ConstPtr& msg);
   void odomCb(const nav_msgs::Odometry::ConstPtr& msg);
+  void groundTruthCb(const nav_msgs::Odometry::ConstPtr& msg);  // ADDED: Debug mode
 
   // helpers
   void ensureInitParticles();
@@ -63,20 +69,31 @@ private:
   void publishParticles(const ros::Time& t);
   void publishLandmarks(const ros::Time& t);
   void publishWeights(const ros::Time& t);
+  void publishSlamOdom(const ros::Time& t);    // ADDED: Publish robot pose estimate
+  void publishMapToOdomTF(const ros::Time& t); // ADDED: Publish TF transform
 
-  // measurement projection: lidar polar -> odom Cartesian using particle pose
-  inline Eigen::Vector2d lidarPolarToOdomXY(const Eigen::Vector3d& base_pose,
-                                            double r, double th) const;
+  // FIXED: Proper landmark coordinate transformation
+  inline Eigen::Vector2d getLandmarkPositionInMap(const Eigen::Vector3d& robot_pose_in_map,
+                                                  double lidar_range, double lidar_bearing) const;
 
   inline Eigen::Matrix2d polarCovToCart(double r, double th,
                                         double r_var, double th_var) const;
+
+  // ADDED: Particle utilities
+  int getBestParticleIndex() const;
+  Eigen::Vector3d getWeightedMeanPose() const;
 
 private:
   ros::NodeHandle nh_, pnh_;
   FS2Params P_;
 
-  ros::Subscriber sub_cones_, sub_odom_;
+  ros::Subscriber sub_cones_, sub_odom_, sub_ground_truth_;  // ADDED: ground truth sub
   ros::Publisher  pub_particles_, pub_landmarks_, pub_weights_;
+  ros::Publisher  pub_slam_odom_;  // ADDED: SLAM pose publisher
+  
+  tf2_ros::TransformBroadcaster tf_broadcaster_;  // ADDED: TF broadcaster
+  tf2_ros::Buffer tf_buffer_;                     // ADDED: TF buffer  
+  tf2_ros::TransformListener tf_listener_;        // ADDED: TF listener
 
   // state
   std::vector<Particle> particles_;
@@ -87,6 +104,14 @@ private:
   ros::Time last_odom_stamp_;
   double last_v_{0.0};
   double last_yawrate_{0.0};
+
+  // ADDED: Debug mode and ground truth tracking
+  bool debug_use_ground_truth_{false};
+  Eigen::Vector3d ground_truth_pose_{Eigen::Vector3d::Zero()};
+
+  // ADDED: Map initialization tracking  
+  bool map_initialized_{false};
+  Eigen::Vector3d initial_pose_{Eigen::Vector3d::Zero()};
 };
 
 } // namespace slam
