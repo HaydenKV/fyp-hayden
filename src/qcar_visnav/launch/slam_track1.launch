@@ -20,7 +20,7 @@
   <!-- FastSLAM2 node with CORRECTED PARAMETERS -->
   <node pkg="qcar_visnav" type="fastslam2_node" name="fastslam2" output="screen">
     <!-- Load fixed configuration -->
-    <rosparam file="$(find qcar_visnav)/config/fastslam2_fixed.yaml" command="load"/>
+    <rosparam file="$(find qcar_visnav)/config/fastslam2.yaml" command="load"/>
     
     <!-- Override key debugging parameters -->
     <param name="debug_use_ground_truth" value="false"/>  <!-- Set to true for debugging -->
@@ -50,10 +50,8 @@
 
   <!-- RViz with FastSLAM visualization -->
   <node pkg="rviz" type="rviz" name="rviz"
-        args="-d $(find qcar_visnav)/rviz/viz_fastslam_fixed.rviz"/>
+        args="-d $(find qcar_visnav)/rviz/viz_fastslam.rviz"/>
 
-  <!-- OPTIONAL: Ground truth publisher for debugging -->
-  <node pkg="qcar_visnav" type="ground_truth_publisher" name="ground_truth" output="screen" if="$(arg debug_mode)"/>
 
 </launch>
 

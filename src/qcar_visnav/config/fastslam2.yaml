@@ -1,20 +1,20 @@
 # ============================================
-# FastSLAM 2.0 Configuration - FIXED VERSION
+# FastSLAM 2.0 Fixed Configuration
 # ============================================
 
-# Core algorithm parameters - TUNED for better performance
-particles: 80                    # Reduced for debugging, increase to 120 when working
-resample_neff_ratio: 0.7         # More conservative resampling
-chi2_gate: 7.38                  # Tighter gating (97.5% confidence, reduced from 99%)
-new_landmark_likelihood_min: 0.4  # Higher threshold to reduce spurious landmarks
+# Core algorithm parameters - Conservative settings for initial testing
+particles: 50                    # Start small for debugging
+resample_neff_ratio: 0.7         # Conservative resampling
+chi2_gate: 5.99                  # Very tight gating (95% confidence)
+new_landmark_likelihood_min: 0.5  # Conservative landmark creation
 
-# Measurement noise (cartesian projection) - REDUCED for better convergence
-meas_noise_xy_x: 0.15            # Reduced from 0.25
-meas_noise_xy_y: 0.15            # Reduced from 0.25
+# Measurement noise (cartesian projection) - Reduced for debugging
+meas_noise_xy_x: 0.12            # Reduced noise for better convergence
+meas_noise_xy_y: 0.12            # Reduced noise for better convergence
 
-# Motion noise - PROPERLY SCALED
-odom_v_std: 0.12                 # Slightly reduced for stability
-odom_yawrate_std: 0.15           # Reduced angular noise
+# Motion noise - Reduced for debugging
+odom_v_std: 0.08                 # Reduced linear velocity noise
+odom_yawrate_std: 0.10           # Reduced angular velocity noise
 
 # Frame definitions
 map_frame:   "map"
@@ -22,14 +22,14 @@ odom_frame:  "odom"
 base_frame:  "base_footprint"
 lidar_frame: "lidar"
 
-# LiDAR->base extrinsics (CRITICAL - VERIFY THESE!)
-lidar_to_base_x: 0.0             # CHECK: LiDAR position relative to base_footprint
-lidar_to_base_y: 0.0             # CHECK: Usually LiDAR is slightly forward/up
-lidar_to_base_yaw_deg: 0.0       # CHECK: LiDAR orientation relative to robot
+# LiDAR->base extrinsics (VERIFY THESE MATCH YOUR URDF!)
+lidar_to_base_x: 0.0             # LiDAR position relative to base_footprint
+lidar_to_base_y: 0.0             # Usually LiDAR is at origin for QCar
+lidar_to_base_yaw_deg: 0.0       # LiDAR orientation relative to robot
 
 # Topic names
-tracked_topic: "/tracked_cones"
-odom_topic:    "/ekf/odom"
+topic_tracked: "/tracked_cones"
+topic_odom:    "/ekf/odom"
 
 # Publication topics
 pub_particles:     "/slam/particles"
@@ -37,17 +37,17 @@ pub_landmarks:     "/map_markers"
 pub_weights:       "/slam/weights"
 pub_slam_odom:     "/slam/odom"
 
-# Penalty factors - TUNED for robustness
-miss_in_fov_penalty: 0.7         # Increased penalty
-color_mismatch_penalty: 0.8      # Increased penalty
+# Penalty factors
+miss_in_fov_penalty: 0.7         # Penalty for missing expected observations
+color_mismatch_penalty: 0.8      # Penalty for color mismatches
 
 # DEBUG MODE - set to true for validation with ground truth
 debug_use_ground_truth: false    # Set to true for debugging
 
-# Advanced parameters for pose refinement
-pose_refinement_enabled: true     # Enable FastSLAM 2.0 pose refinement
-max_pose_correction_m: 0.5       # Maximum pose correction per step
-pose_correction_weight: 0.3      # How aggressively to apply corrections
+# FastSLAM 2.0 specific parameters
+pose_refinement_enabled: true     # Enable measurement-informed pose refinement
+max_pose_correction_m: 0.3       # Maximum pose correction per step (conservative)
+pose_correction_weight: 0.2      # How aggressively to apply corrections (conservative)
 
 # Data association parameters
 max_association_distance_m: 1.0  # Maximum distance for landmark association

@@ -1,54 +1,100 @@
-# ============================================
-# FastSLAM 2.0 Configuration - FIXED VERSION
-# ============================================
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+  - Class: rviz/Views
+    Name: Views
+Visualization Manager:
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: map
+    Frame Rate: 30
+  Displays:
+    - Class: rviz/TF
+      Name: TF
+      Enabled: true
+      Show Axes: true
+      Show Names: true
+      Alpha: 0.5
 
-# Core algorithm parameters - TUNED for better performance
-particles: 80                    # Reduced for debugging, increase to 120 when working
-resample_neff_ratio: 0.7         # More conservative resampling
-chi2_gate: 7.38                  # Tighter gating (97.5% confidence, reduced from 99%)
-new_landmark_likelihood_min: 0.4  # Higher threshold to reduce spurious landmarks
+    - Class: rviz/LaserScan
+      Name: Scan
+      Enabled: true
+      Topic: /scan
+      Queue Size: 10
+      Style: Flat Squares
+      Size (m): 0.03
+      Color Transformer: Intensity
+      Use Rainbow: true
 
-# Measurement noise (cartesian projection) - REDUCED for better convergence
-meas_noise_xy_x: 0.15            # Reduced from 0.25
-meas_noise_xy_y: 0.15            # Reduced from 0.25
+    - Class: rviz/MarkerArray
+      Name: Raw Cones
+      Enabled: true
+      Marker Topic: /cones_markers_raw
+      Queue Size: 10
 
-# Motion noise - PROPERLY SCALED
-odom_v_std: 0.12                 # Slightly reduced for stability
-odom_yawrate_std: 0.15           # Reduced angular noise
+    - Class: rviz/MarkerArray
+      Name: Tracked Cones
+      Enabled: true
+      Marker Topic: /cones_markers_tracked
+      Queue Size: 10
 
-# Frame definitions
-map_frame:   "map"
-odom_frame:  "odom"
-base_frame:  "base_footprint"
-lidar_frame: "lidar"
+    - Class: rviz/MarkerArray
+      Name: SLAM Landmarks
+      Enabled: true
+      Marker Topic: /map_markers
+      Queue Size: 10
 
-# LiDAR->base extrinsics (CRITICAL - VERIFY THESE!)
-lidar_to_base_x: 0.0             # CHECK: LiDAR position relative to base_footprint
-lidar_to_base_y: 0.0             # CHECK: Usually LiDAR is slightly forward/up
-lidar_to_base_yaw_deg: 0.0       # CHECK: LiDAR orientation relative to robot
+    - Class: rviz/PoseArray
+      Name: Particles
+      Enabled: true
+      Topic: /slam/particles
+      Queue Size: 5
+      Color: 255; 25; 0
+      Alpha: 0.7
+      Shaft Length: 0.3
+      Shaft Radius: 0.02
+      Head Length: 0.1
+      Head Radius: 0.05
 
-# Topic names
-tracked_topic: "/tracked_cones"
-odom_topic:    "/ekf/odom"
+    - Class: rviz/Odometry
+      Name: SLAM Pose
+      Enabled: true
+      Topic: /slam/odom
+      Keep: 50
+      Position Tolerance: 0.1
+      Angle Tolerance: 0.1
+      Shape:
+        Alpha: 1
+        Axes Length: 0.5
+        Axes Radius: 0.05
+        Color: 0; 255; 0
+        Head Length: 0.3
+        Head Radius: 0.1
+        Shaft Length: 1
+        Shaft Radius: 0.05
+        Value: Arrow
+      Covariance:
+        Enabled: true
+        Color: 255; 255; 127
+        Alpha: 0.3
 
-# Publication topics
-pub_particles:     "/slam/particles"
-pub_landmarks:     "/map_markers"
-pub_weights:       "/slam/weights"
-pub_slam_odom:     "/slam/odom"
+    - Class: rviz/Grid
+      Name: Grid
+      Enabled: true
+      Color: 160; 160; 164
+      Alpha: 0.5
 
-# Penalty factors - TUNED for robustness
-miss_in_fov_penalty: 0.7         # Increased penalty
-color_mismatch_penalty: 0.8      # Increased penalty
+  Tools:
+    - Class: rviz/Interact
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
 
-# DEBUG MODE - set to true for validation with ground truth
-debug_use_ground_truth: false    # Set to true for debugging
-
-# Advanced parameters for pose refinement
-pose_refinement_enabled: true     # Enable FastSLAM 2.0 pose refinement
-max_pose_correction_m: 0.5       # Maximum pose correction per step
-pose_correction_weight: 0.3      # How aggressively to apply corrections
-
-# Data association parameters
-max_association_distance_m: 1.0  # Maximum distance for landmark association
-min_correspondences_for_refinement: 2  # Minimum matches needed for pose refinement
+  Views:
+    Current:
+      Class: rviz/TopDownOrtho
+      Name: TopDown
+      Target Frame: map
+      Angle: 0
+      Scale: 25
+      X: 0
+      Y: 0
