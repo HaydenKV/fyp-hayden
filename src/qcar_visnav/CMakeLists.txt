@@ -60,7 +60,6 @@ catkin_package(
     tf2_geometry_msgs
     visualization_msgs
     message_runtime
-    topic_tools
   DEPENDS Eigen3
 )
 
@@ -132,21 +131,22 @@ target_link_libraries(cone_tracker_node
 )
 
 # --- SLAM (FastSLAM2) node
-add_executable(fastslam2_node
-  src/slam/fastslam2_node.cpp
-  src/slam/fastslam2_core.cpp
-  src/slam/data_assoc.cpp
-  src/slam/landmark_ekf.cpp
+set(SLAM_SRCS
+  src/slam/fastslam2.cpp
+  src/slam/slam_node.cpp
   src/slam/motion_model.cpp
+  src/slam/measurement_model.cpp
+  src/slam/data_association.cpp
   src/slam/resampling.cpp
+  src/slam/tf_utils.cpp
 )
-add_dependencies(fastslam2_node
+
+add_executable(slam_node ${SLAM_SRCS})
+add_dependencies(slam_node
   ${${PROJECT_NAME}_EXPORTED_TARGETS}
   ${catkin_EXPORTED_TARGETS}
 )
-# Note: In ROS1, link only against ${catkin_LIBRARIES}; tf2::* imported targets
-# are typically not available and will cause CMake errors.
-target_link_libraries(fastslam2_node
+target_link_libraries(slam_node
   ${catkin_LIBRARIES}
 )
 
@@ -158,7 +158,7 @@ install(TARGETS
   cone_detector_node
   cones_viz_node
   cone_tracker_node
-  fastslam2_node
+  slam_node
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

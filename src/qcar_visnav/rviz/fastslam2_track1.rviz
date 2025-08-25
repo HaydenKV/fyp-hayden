@@ -1,0 +1,114 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+  - Class: rviz/Views
+    Name: Views
+
+Visualization Manager:
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: odom         # <-- was 'map'
+    Frame Rate: 30
+
+  Displays:
+    - Class: rviz/TF
+      Name: TF
+      Enabled: true
+      Show Axes: true
+      Show Names: false
+      Alpha: 0.5
+
+    - Class: rviz/LaserScan
+      Name: Scan
+      Enabled: true
+      Topic: /scan
+      Queue Size: 10
+      Style: Flat Squares
+      Size (m): 0.03
+      Axis: Z
+      Color Transformer: Intensity
+      Use Rainbow: true
+      Autocompute Intensity Bounds: true
+      Min Intensity: 0
+      Max Intensity: 4096
+      Decay Time: 0
+      Selectable: true
+
+    # RAW cones
+    - Class: rviz/MarkerArray
+      Name: Cones (RAW)
+      Enabled: true
+      Marker Topic: /cones_markers_raw
+      Queue Size: 10
+
+    # TRACKED cones
+    - Class: rviz/MarkerArray
+      Name: Cones (TRACKED)
+      Enabled: true
+      Marker Topic: /cones_markers_tracked
+      Queue Size: 10
+
+    # SLAM Particles (arrows)
+    - Class: rviz/MarkerArray
+      Name: SLAM Particles
+      Enabled: true
+      Marker Topic: /slam/particles
+      Queue Size: 10
+
+    # SLAM Particles PoseArray
+    - Class: rviz/PoseArray
+      Name: SLAM Particle Poses
+      Enabled: true
+      Topic: /slam/particles_pose
+      Queue Size: 10
+      Color: 0; 255; 0
+      Arrow Length: 0.3
+
+    # SLAM Landmarks (best particle)
+    - Class: rviz/MarkerArray
+      Name: SLAM Landmarks
+      Enabled: true
+      Marker Topic: /slam/map_markers
+      Queue Size: 10
+
+    # SLAM Odom (best)
+    - Class: rviz/Odometry
+      Name: SLAM Odom (best)
+      Enabled: true
+      Topic: /slam/odom
+      Shape: Arrow
+      Length: 0.6
+      Color: 0; 255; 0
+      Alpha: 1.0
+
+    # SLAM Odom (mean)
+    - Class: rviz/Odometry
+      Name: SLAM Odom (mean)
+      Enabled: true
+      Topic: /slam/odom_mean
+      Shape: Arrow
+      Length: 0.6
+      Color: 255; 0; 0
+      Alpha: 1.0
+
+    - Class: rviz/Grid
+      Enabled: true
+      Cell Size: 1.0
+      Color: 160; 160; 160
+      Alpha: 0.5
+
+  Tools:
+    - Class: rviz/Interact
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+    - Class: rviz/Measure
+
+  Views:
+    Current:
+      Class: rviz/TopDownOrtho
+      Name: TopDown
+      Target Frame: odom      # <-- was 'map'
+      Angle: 0
+      Scale: 40
+      X: 0
+      Y: 0

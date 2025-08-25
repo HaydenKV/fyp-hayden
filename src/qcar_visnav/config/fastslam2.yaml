@@ -1,54 +1,47 @@
-# ============================================
-# FastSLAM 2.0 Fixed Configuration
-# ============================================
+frames:
+  map_frame: "odom"            # run entirely in ODOM
+  odom_frame: "odom"
+  base_frame: "base_footprint"
+  lidar_frame: "lidar"
 
-# Core algorithm parameters - Conservative settings for initial testing
-particles: 50                    # Start small for debugging
-resample_neff_ratio: 0.7         # Conservative resampling
-chi2_gate: 5.99                  # Very tight gating (95% confidence)
-new_landmark_likelihood_min: 0.5  # Conservative landmark creation
+# --- Initial pose (spawn pose) ---
+seed_from_params: true
+overwrite_with_odom_on_first_msg: true   # snap to first /odom pose
+init:
+  x:   -4.3
+  y:    3.0
+  yaw: -3.14
+initial_spread:
+  x:   0.05
+  y:   0.05
+  yaw: 0.02
 
-# Measurement noise (cartesian projection) - Reduced for debugging
-meas_noise_xy_x: 0.12            # Reduced noise for better convergence
-meas_noise_xy_y: 0.12            # Reduced noise for better convergence
+# /odom twist semantics (Gazebo often provides world-frame twists)
+odom_twist_in_world: false      # set true if /odom.twist is world-frame
 
-# Motion noise - Reduced for debugging
-odom_v_std: 0.08                 # Reduced linear velocity noise
-odom_yawrate_std: 0.10           # Reduced angular velocity noise
+particles: 120
+resample_neff_ratio: 0.4
 
-# Frame definitions
-map_frame:   "map"
-odom_frame:  "odom"
-base_frame:  "base_footprint"
-lidar_frame: "lidar"
+motion_noise:
+  sigma_x:   0.02
+  sigma_y:   0.02
+  sigma_yaw: 0.005
 
-# LiDAR->base extrinsics (VERIFY THESE MATCH YOUR URDF!)
-lidar_to_base_x: 0.0             # LiDAR position relative to base_footprint
-lidar_to_base_y: 0.0             # Usually LiDAR is at origin for QCar
-lidar_to_base_yaw_deg: 0.0       # LiDAR orientation relative to robot
+association:
+  chi2_gate: 16.27              # start loose (try 9.21 later for stricter gating)
 
-# Topic names
-topic_tracked: "/tracked_cones"
-topic_odom:    "/ekf/odom"
+# Landmark management
+confirm_hits: 2                 # require 2 observations before turning blue
+min_new_lm_dist: 0.35           # m, suppress new spawn if near an existing landmark
+merge_R_scale: 4.0              # inflate R when merging near-duplicates
 
-# Publication topics
-pub_particles:     "/slam/particles"
-pub_landmarks:     "/map_markers"
-pub_weights:       "/slam/weights"
-pub_slam_odom:     "/slam/odom"
+measurement_noise_inflate:
+  range: 1.0
+  bearing: 1.0
 
-# Penalty factors
-miss_in_fov_penalty: 0.7         # Penalty for missing expected observations
-color_mismatch_penalty: 0.8      # Penalty for color mismatches
+publish_rates_hz:
+  viz: 15
 
-# DEBUG MODE - set to true for validation with ground truth
-debug_use_ground_truth: false    # Set to true for debugging
-
-# FastSLAM 2.0 specific parameters
-pose_refinement_enabled: true     # Enable measurement-informed pose refinement
-max_pose_correction_m: 0.3       # Maximum pose correction per step (conservative)
-pose_correction_weight: 0.2      # How aggressively to apply corrections (conservative)
-
-# Data association parameters
-max_association_distance_m: 1.0  # Maximum distance for landmark association
-min_correspondences_for_refinement: 2  # Minimum matches needed for pose refinement
+sensor:
+  lidar_rate_hz: 10
+  lidar_angles: [-3.14, 3.14]
