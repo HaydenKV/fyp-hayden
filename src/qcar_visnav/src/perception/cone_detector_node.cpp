@@ -222,10 +222,10 @@ static void scanCb(const sensor_msgs::LaserScan::ConstPtr& scan)
       const double th_var = (sigma_theta * sigma_theta) / n;
 
       qcar_visnav::Cone cone;
-      cone.range        = range;
-      cone.bearing      = bearing;
-      cone.r_var        = r_var;
-      cone.bearing_var  = th_var;
+      cone.range        = range; // meters
+      cone.bearing      = bearing; // radians
+      cone.r_var        = r_var; // m^2
+      cone.bearing_var  = th_var; // radians^2
       cone.color        = 0;    // unknown (LiDAR-only)
       cone.color_conf   = 0.0;
 
@@ -239,7 +239,7 @@ static void scanCb(const sensor_msgs::LaserScan::ConstPtr& scan)
                       P.detection_mode.c_str(), segments.size(), total_pts, total_clusters);
   }
 
-  cones_pub.publish(out);
+  cones_pub.publish(out); // Publish to /cones topic
 }
 
 int main(int argc, char** argv)

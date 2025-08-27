@@ -79,13 +79,13 @@ struct Params {
 // ============================
 // Track structure (state in ODOM)
 // ============================
-struct Track {
-  Eigen::Vector2d x{Eigen::Vector2d::Zero()};       // [X,Y] in ODOM
-  Eigen::Matrix2d P{Eigen::Matrix2d::Identity()};   // covariance in ODOM
-  uint32_t id{0};
+struct Track { // Persistent tracks (survive across frames)
+  Eigen::Vector2d x{Eigen::Vector2d::Zero()};       // [X,Y] in ODOM (WHERE WE THINK THE CONE IS)
+  Eigen::Matrix2d P{Eigen::Matrix2d::Identity()};   // covariance in ODOM (HOW UNCERTAIN WE ARE)
+  uint32_t id{0}; // UNIQUE PERSISTENT ID
   int hits{0};          // consecutive hits
-  int misses{0};        // consecutive misses
-  bool confirmed{false};
+  int misses{0};        // consecutive misses (HOW MANY FRAMES SINCE LAST SEEN)
+  bool confirmed{false}; // IS IT RELIABLE ENOUGH?
   ros::Time last_stamp; // time of last predict/update
   int color{0};
   double color_conf{0.0};
@@ -94,10 +94,10 @@ struct Track {
 // ============================
 // Globals
 // ============================
-static ros::Subscriber sub_dets;
-static ros::Publisher  pub_tracks;
-static std::vector<Track> g_tracks;
-static uint32_t g_next_id = 1;
+static ros::Subscriber sub_dets; // subscribes to raw detections
+static ros::Publisher  pub_tracks; // publishes confirmed tracks
+static std::vector<Track> g_tracks; // THE PERSISTENT MEMORY
+static uint32_t g_next_id = 1;  
 
 static std::unique_ptr<tf2_ros::Buffer> tf_buffer;
 static std::unique_ptr<tf2_ros::TransformListener> tf_listener;
@@ -443,7 +443,7 @@ void conesCb(const qcar_visnav::ConeArray::ConstPtr &msg)
       Nd, pairs.size(), Nd - (int)pairs.size(), g_tracks.size(), n_pub, lidar_frame.c_str());
   }
 
-  pub_tracks.publish(out);
+  pub_tracks.publish(out); // Publish to /tracked_cones topic
 }
 
 // ============================
