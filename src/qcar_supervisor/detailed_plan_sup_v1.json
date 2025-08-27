@@ -1,0 +1,87 @@
+{
+  "Qcar - Block 1 (JMF, fault detection) Detailed Plan": {
+    "Version": "1.4",
+    "Date": "2025-08-24",
+    "Summary": "The sup_jmf_node initializes and runs continuously without crashing; parameter loading, predict/update cycles and TF broadcast are confirmed, but the sup_jmf topics aren’t publishing yet. Next steps are to restore topic publication, implement fault flag outputs, and tune the mode transition probabilities.",
+    "Purpose": "Implement a fault detection system for the Qcar project using JMF (Jump Markov Filter). The system will monitor vehicle parameters and identify potential faults in real-time.",
+    "I/O": {
+      "inputs": [
+        "velocity (from EKF)",
+        "position (from SLAM/noisy position node)",
+        "IMU data",
+        "wheel odometry"
+      ],
+      "outputs": [
+        "fused odometry (nav_msgs/Odometry)",
+        "mode probabilities (Float64MultiArray)",
+        "fault_detected (bool)",
+        "fault_type (string)",
+        "fault_severity (int)"
+      ]
+    },
+    "file_structure": {
+      "src/": {
+        "catkin_package/": "...",
+        "gazebo_ros_motors-master/": "...",
+        "qcar_control/": "...",
+        "qcar_controlplugin/": "...",
+        "qcar_gazebo/": "...",
+        "qcar_guidance/": "...",
+        "qcar_sysid/": "...",
+        "ros_example_files/": "...",
+        "CMakeLists.txt": "workspace root build file",
+        "main.cpp": "optional standalone entry point",
+        "qcar_visnav/": {
+          "config/ekf.yaml": "velocity-EKF params",
+          "include/ekf/": { "ekf.h": "velocity EKF header" },
+          "src/estimation/node/": { "ekf_node.cpp": "velocity EKF node" },
+          "src/estimation/ekf/": { "ekf.cpp": "velocity EKF implementation" }
+        },
+        "qcar_supervisor/": {
+          "config/": [
+            "jmf.yaml         # JMF process noise & transitions"
+          ],
+          "include/qcar_supervisor/": {
+            "JMF/JMF.h": "JumpMarkovFilter class declaration",
+            "noise_pos/NoisePos.h": "SLAM/noisy‐position interface",
+            "nodes/": {
+              "sup_jmf_node.h": "sup_jmf_node class declaration"
+          },
+          "launch/": [
+            "Track1.launch    # brings up Gazebo + sup_ekf_node + sup_jmf_node + control stack"
+          ],
+          "src/": {
+            "JMF/JMF.cpp": "JumpMarkovFilter implementation"
+          },
+          "node/": {
+            "sup_jmf_node.cpp": "Node for fault detection using JMF",
+            "noise_pos_node.cpp": "Node to simulate noisy position data"
+          },
+          "noise_pos/": {
+            "noise_pos.cpp": "Implementation file for Noise Position class"
+          },
+          "tests/": "Unit tests for JMF and noise position",
+          "CMakeLists.txt": "Build file for qcar_supervisor",
+          "detailed_plan_sup_v1.json": "This file",
+          "package.xml": "Package manifest for qcar_supervisor"
+        }
+      }
+    },
+    "current_progress": [
+      "Loaded model_length, q-vector (size 6) and π matrix (mapped into Eigen::MatrixXd) from the private namespace without missing-parameter errors.",
+      "Replaced fixed-size π declaration; used Eigen::Map<RowMajor> to ingest arbitrary N×N transition matrices safely.",
+      "Initialized JumpMarkovFilter with zeroed state and identity covariance; set mode0 uniformly across N modes.",
+      "Subscribed to /imu, /odom (wheelCallback stub), and /noisy_odom; implemented predict/update cycles for IMU and position measurements.",
+      "Published fused odometry (/sup_jmf/odom) and mode probabilities (/sup_jmf/mode_prob, /sup_jmf/current_mode) alongside a TF from 'odom' to 'base_link'.",
+      "Verified continuous node uptime in Gazebo under Track1.launch and seamless integration with the velocity EKF data stream.",
+      "Confirmed sup_jmf_node runs without crashing, but its topics are not yet publishing."
+    ],
+    "missing_components": [
+      "Restore and verify topic advertising and publisher callbacks in sup_jmf_node so fused odometry and mode probabilities actually appear on the bus.",
+      "Implement threshold logic and publication for fault_detected, fault_type, and fault_severity flags.",
+      "Tune the mode transition probability matrix (π) via dynamic_reconfigure or parameter updates to optimize mode inference.",
+      "Write comprehensive unit tests (Google Test) for EKF and JMF under qcar_supervisor/tests.",
+      "Publish diagnostic metrics (innovation norms, likelihoods) via diagnostic_updater."
+    ]
+  }
+}

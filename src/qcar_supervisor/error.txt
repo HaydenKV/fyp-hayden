@@ -1,0 +1,122 @@
+/home/harry/fyp-hayden/src/qcar_supervisor/src/JMF/JMF.cpp: In member function ‘void qcar_supervisor::JumpMarkovFilter::update(const VectorXd&, const HfunType&, const HmatType&, const MatrixXd&)’:
+/home/harry/fyp-hayden/src/qcar_supervisor/src/JMF/JMF.cpp:65:35: error: no matching function for call to ‘qcar_supervisor::ExtendedKalmanFilter<6, 3>::update(const VectorXd&, const HfunType&, const HmatType&, const MatrixXd&)’
+   65 |     ekf_.update(z, h_fun, H_fun, R);
+      |                                   ^
+In file included from /home/harry/fyp-hayden/src/qcar_supervisor/include/qcar_supervisor/JMF/JMF.h:8,
+                 from /home/harry/fyp-hayden/src/qcar_supervisor/src/JMF/JMF.cpp:1:
+/home/harry/fyp-hayden/src/qcar_supervisor/include/qcar_supervisor/ekf.h:102:8: note: candidate: ‘template<class Hfun, class HjacFun> void qcar_supervisor::ExtendedKalmanFilter<NX, NU>::update(const Eigen::Matrix<double, Hfun::OutputAtCompileTime, 1>&, Hfun&&, HjacFun&&, const Eigen::Matrix<double, HjacFun::RowsAtCompileTime, HjacFun::RowsAtCompileTime>&) [with Hfun = Hfun; HjacFun = HjacFun; int NX = 6; int NU = 3]’
+  102 |   void update(
+      |        ^~~~~~
+/home/harry/fyp-hayden/src/qcar_supervisor/include/qcar_supervisor/ekf.h:102:8: note:   template argument deduction/substitution failed:
+/home/harry/fyp-hayden/src/qcar_supervisor/include/qcar_supervisor/ekf.h: In substitution of ‘template<class Hfun, class HjacFun> void qcar_supervisor::ExtendedKalmanFilter<6, 3>::update<Hfun, HjacFun>(const Eigen::Matrix<double, Hfun::OutputAtCompileTime, 1, (Eigen::AutoAlign | (((Hfun::OutputAtCompileTime == 1) && (1 != 1)) ? Eigen::RowMajor : (((1 == 1) && (Hfun::OutputAtCompileTime != 1)) ? Eigen::ColMajor :  Eigen::ColMajor))), Hfun::OutputAtCompileTime, 1>&, Hfun&&, HjacFun&&, const Eigen::Matrix<double, HjacFun::RowsAtCompileTime, HjacFun::RowsAtCompileTime, (Eigen::AutoAlign | (((HjacFun::RowsAtCompileTime == 1) && (HjacFun::RowsAtCompileTime != 1)) ? Eigen::RowMajor : (((HjacFun::RowsAtCompileTime == 1) && (HjacFun::RowsAtCompileTime != 1)) ? Eigen::ColMajor :  Eigen::ColMajor))), HjacFun::RowsAtCompileTime, HjacFun::RowsAtCompileTime>&) [with Hfun = const std::function<Eigen::Matrix<double, -1, 1>(const Eigen::Matrix<double, 6, 1>&)>&; HjacFun = const std::function<Eigen::Matrix<double, -1, -1>(const Eigen::Matrix<double, 6, 1>&)>&]’:
+/home/harry/fyp-hayden/src/qcar_supervisor/src/JMF/JMF.cpp:65:35:   required from here
+/home/harry/fyp-hayden/src/qcar_supervisor/include/qcar_supervisor/ekf.h:102:8: error: ‘RowsAtCompileTime’ is not a member of ‘const std::function<Eigen::Matrix<double, -1, -1>(const Eigen::Matrix<double, 6, 1>&)>&’
+make[2]: *** [qcar_supervisor/CMakeFiles/jmf_lib.dir/build.make:63: qcar_supervisor/CMakeFiles/jmf_lib.dir/src/JMF/JMF.cpp.o] Error 1
+make[1]: *** [CMakeFiles/Makefile2:3044: qcar_supervisor/CMakeFiles/jmf_lib.dir/all] Error 2
+make[1]: *** Waiting for unfinished jobs....
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:200:1: error: expected ‘}’ at end of input
+  200 | }
+      | ^
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:15:1: note: to match this ‘{’
+   15 | {
+      | ^
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp: In constructor ‘EkfStatePublisher::EkfStatePublisher(ros::NodeHandle&)’:
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:18:5: error: class ‘EkfStatePublisher’ does not have any field named ‘nh_’
+   18 |   : nh_(nh),
+      |     ^~~
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:19:5: error: class ‘EkfStatePublisher’ does not have any field named ‘ekf_’
+   19 |     ekf_()
+      |     ^~~~
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:24:5: error: ‘ekf_’ was not declared in this scope
+   24 |     ekf_.init(x0, P0);
+      |     ^~~~
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:32:5: error: ‘ctrl_sub_’ was not declared in this scope
+   32 |     ctrl_sub_ = nh_.subscribe("cmd_vel", 10,
+      |     ^~~~~~~~~
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:32:17: error: ‘nh_’ was not declared in this scope; did you mean ‘nh’?
+   32 |     ctrl_sub_ = nh_.subscribe("cmd_vel", 10,
+      |                 ^~~
+      |                 nh
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:34:5: error: ‘meas_sub_’ was not declared in this scope
+   34 |     meas_sub_ = nh_.subscribe("meas_pose", 10,
+      |     ^~~~~~~~~
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:36:5: error: ‘imu_sub_’ was not declared in this scope; did you mean ‘_mm_sub_sd’?
+   36 |     imu_sub_ = nh_.subscribe("imu/data", 10,
+      |     ^~~~~~~~
+      |     _mm_sub_sd
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:37:39: error: ‘imuCallback’ is not a member of ‘EkfStatePublisher’
+   37 |                   &EkfStatePublisher::imuCallback, this);
+      |                                       ^~~~~~~~~~~
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:40:5: error: ‘odom_pub_’ was not declared in this scope
+   40 |     odom_pub_ = nh_.advertise<nav_msgs::Odometry>("ekf_odom", 10);
+      |     ^~~~~~~~~
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:40:49: error: expected primary-expression before ‘>’ token
+   40 |     odom_pub_ = nh_.advertise<nav_msgs::Odometry>("ekf_odom", 10);
+      |                                                 ^
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:42:5: error: ‘acc_error_pub_’ was not declared in this scope
+   42 |     acc_error_pub_ = nh_.advertise<geometry_msgs::Vector3Stamped>(
+      |     ^~~~~~~~~~~~~~
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:42:65: error: expected primary-expression before ‘>’ token
+   42 |     acc_error_pub_ = nh_.advertise<geometry_msgs::Vector3Stamped>(
+      |                                                                 ^
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:47:5: error: ‘timer_’ was not declared in this scope; did you mean ‘timer_t’?
+   47 |     timer_ = nh_.createTimer(
+      |     ^~~~~~
+      |     timer_t
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp: In member function ‘void EkfStatePublisher::controlCallback(const ConstPtr&)’:
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:57:7: error: ‘struct qcar_supervisor::KinematicModel::ModelInput’ has no member named ‘u’
+   57 |     u.u(0) = msg->twist.linear.x;
+      |       ^
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:58:7: error: ‘struct qcar_supervisor::KinematicModel::ModelInput’ has no member named ‘u’
+   58 |     u.u(1) = msg->twist.linear.y;
+      |       ^
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:62:10: error: ‘last_ctrl_time_’ was not declared in this scope
+   62 |     if (!last_ctrl_time_.isZero()) {
+      |          ^~~~~~~~~~~~~~~
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:65:5: error: ‘last_ctrl_time_’ was not declared in this scope
+   65 |     last_ctrl_time_ = now;
+      |     ^~~~~~~~~~~~~~~
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:67:5: error: ‘ekf_’ was not declared in this scope
+   67 |     ekf_.setInput(u);
+      |     ^~~~
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp: In member function ‘void EkfStatePublisher::measurementCallback(const ConstPtr&)’:
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:92:5: error: ‘ekf_’ was not declared in this scope
+   92 |     ekf_.update(z, h, Hjac, R);
+      |     ^~~~
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp: In member function ‘void EkfStatePublisher::timerCallback(const ros::TimerEvent&)’:
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:104:17: error: ‘last_ctrl_time_’ was not declared in this scope
+  104 |     double dt = last_ctrl_time_.isZero()
+      |                 ^~~~~~~~~~~~~~~
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:108:5: error: ‘ekf_’ was not declared in this scope
+  108 |     ekf_.predict(e.current_real.toSec(), dt);
+      |     ^~~~
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:115:39: error: ‘last_vel_’ was not declared in this scope
+  115 |     Eigen::Vector3d pred_acc = (vel - last_vel_) / dt;
+      |                                       ^~~~~~~~~
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:140:5: error: ‘odom_pub_’ was not declared in this scope
+  140 |     odom_pub_.publish(odom);
+      |     ^~~~~~~~~
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:147:5: error: ‘tf_broadcaster_’ was not declared in this scope
+  147 |     tf_broadcaster_.sendTransform(
+      |     ^~~~~~~~~~~~~~~
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:151:9: error: ‘has_imu_’ was not declared in this scope
+  151 |     if (has_imu_) {
+      |         ^~~~~~~~
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:155:9: error: ‘latest_imu_’ was not declared in this scope
+  155 |         latest_imu_.linear_acceleration.x,
+      |         ^~~~~~~~~~~
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:168:7: error: ‘acc_error_pub_’ was not declared in this scope; did you mean ‘acc_error’?
+  168 |       acc_error_pub_.publish(err_msg);
+      |       ^~~~~~~~~~~~~~
+      |       acc_error
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:172:3: error: a function-definition is not allowed here before ‘{’ token
+  172 |   {
+      |   ^
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp: At global scope:
+/home/harry/fyp-hayden/src/qcar_supervisor/src/nodes/sup_ekf_node.cpp:200:1: error: expected unqualified-id at end of input
+  200 | }
+      | ^
+make[2]: *** [qcar_supervisor/CMakeFiles/sup_ekf_node.dir/build.make:63: qcar_supervisor/CMakeFiles/sup_ekf_node.dir/src/nodes/sup_ekf_node.cpp.o] Error 1
+make[1]: *** [CMakeFiles/Makefile2:2069: qcar_supervisor/CMakeFiles/sup_ekf_node.dir/all] Error 2
+make: *** [Makefile:141: all] Error 2
+Invoking "make -j6 -l6" failed

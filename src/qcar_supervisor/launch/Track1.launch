@@ -35,7 +35,8 @@
     <remap from="/joint_states" to="/qcar/joint_states"/>
   </node>
   
-  <!-- Velocity EKF -->
+  <!-- Velocity EKF VISNAV-->
+  
   <node pkg="qcar_visnav"
         type="ekf_node"
         name="velocity_ekf"
@@ -43,6 +44,7 @@
     <rosparam file="$(find qcar_visnav)/config/ekf.yaml" command="load"/>
     <remap from="/joint_states" to="/qcar/joint_states"/>
   </node>
+ 
 
   <!-- Gazebo world -->
   <include file="$(find gazebo_ros)/launch/empty_world.launch">
@@ -66,21 +68,24 @@
           output="screen"/>
   </group>
 
-  <!-- ================= Supervisory EKF Node ================= -->
-  <node pkg="qcar_supervisor" type="ekf_node" name="ekf_node" output="screen">
-    <!-- loads Q, R_imu, model_length -->
-    <rosparam file="$(find qcar_supervisor)/config/ekf.yaml" command="load"/>
-    <!-- remap your topics to gazebo names -->
-    <remap from="imu/data_raw" to="/qcar/imu/data_raw"/>
-    <remap from="wheel/odom"   to="/qcar/wheel/odom"/>
+  <!-- ================= Supervisory JMF Node ================= -->
+  <!-- load all JMF parameters into the global namespace -->
+  <!-- loads Q, Pi, model_length -->
+  <node pkg="qcar_supervisor"
+        type="sup_jmf_node"
+        name="sup_jmf_node"
+        output="screen">
+  <!-- load jmf params into this node's namespace -->
+    <rosparam ns="~"
+              file="$(find qcar_supervisor)/config/jmf.yaml"
+              command="load"/>
   </node>
 
-  <!-- ================= Supervisory JMF Node ================= -->
-  <node pkg="qcar_supervisor" type="jmf_node" name="jmf_node" output="screen">
-    <!-- loads Q, Pi, model_length -->
-    <rosparam file="$(find qcar_supervisor)/config/jmf.yaml" command="load"/>
-    <remap from="imu/data_raw" to="/qcar/imu/data_raw"/>
-    <remap from="wheel/odom"   to="/qcar/wheel/odom"/>
-  </node>
+
+  <!-- ================= Noisy Position Node ================= -->
+  <node pkg="qcar_supervisor"
+        type="noisy_pos_node"
+        name="noisy_pos_node"
+        output="screen"/>
 </launch>
 

@@ -1,0 +1,326 @@
+#include <ros/ros.h>
+#include <sensor_msgs/Imu.h>
+#include <sensor_msgs/JointState.h>
+#include <geometry_msgs/PoseWithCovarianceStamped.h>
+#include <Eigen/Dense>
+#include <tf/transform_datatypes.h>
+#include <limits>
+#include <algorithm>
+#include <vector>
+#include <array>
+
+class JmfNode
+{
+public:
+  JmfNode()
+    : nh_(),
+      last_time_(ros::Time::now())
+  {
+  // ── 1) Subscriptions ────────────────────────────────────
+  imu_sub_   = nh_.subscribe("/imu",          10, &JmfNode::imuCb,   this);
+  pose_sub_  = nh_.subscribe("/pose_lidar",   10, &JmfNode::poseCb,  this);
+  joint_sub_ = nh_.subscribe("/joint_states", 10, &JmfNode::jointCb, this);
+
+  // ── 2) Publications ─────────────────────────────────────
+  state_pub_     = nh_.advertise<geometry_msgs::PoseWithCovarianceStamped>(
+                      "jmf/pose_fused",  10);
+  mode_prob_pub_ = nh_.advertise<sensor_msgs::JointState>(
+                      "jmf/mode_probs", 10);
+
+  // ── 3) Parameters ──────────────────────────────────────
+  nh_.param("jmf/L",         L_,          2.85);
+  nh_.param("jmf/r_w",       r_w_,        0.32);
+  nh_.param("jmf/tau_v",     tau_v_,      0.08);
+  nh_.param("jmf/tau_delta", tau_delta_,  0.07);
+
+  // ── 4) Filter initialization ────────────────────────────
+  initFilters();
+  }
+
+private:
+  //── Dimensions & mode count ───────────────────────────────
+  enum { STATE_DIM  = 6,    // [x, y, yaw, vx, vy]
+         MEAS_DIM   = 3,    // [x, y, yaw]
+         MODE_COUNT = 4 };  // healthy, steering_fault, engine_fault, imu_fault
+
+  //── ROS handles ────────────────────────────────────────────
+  ros::NodeHandle nh_;
+  ros::Subscriber imu_sub_, pose_sub_, joint_sub_;
+  ros::Publisher  state_pub_, mode_prob_pub_;
+  
+  //── Bicycle model constants ────────────────────────────────
+  double L_, r_w_, tau_v_, tau_delta_;
+
+  //── Inputs from /joint_states ─────────────────────────────
+  double omega_      = 0.0;
+  double delta_meas_ = 0.0;
+
+  //── Filter state per mode ──────────────────────────────────
+  struct ModeFilter {
+    Eigen::VectorXd x;  // STATE_DIM
+    Eigen::MatrixXd P;  // STATE_DIM×STATE_DIM
+  };
+  std::vector<ModeFilter> filters_;
+
+  //── Jump–Markov parameters ─────────────────────────────────
+  Eigen::MatrixXd              pi_;    // MODE_COUNT×MODE_COUNT
+  Eigen::VectorXd              beta_;  // MODE_COUNT
+  std::vector<Eigen::MatrixXd> Q_, R_; // per-mode covariances
+
+  //── Mode names for JointState publication ─────────────────
+  const std::array<std::string, MODE_COUNT> mode_names_ = {
+    "healthy", "steering_fault", "engine_fault", "imu_fault"
+  };
+
+  ros::Time last_time_;
+
+  //── 1) Initialize π, β₀, Q_i, R_i from ROS params ──────────
+  void initFilters()
+  {
+    // Each Q and R values for each mode 0-(i-1) stored/loaded in the .launch file
+    filters_.resize(MODE_COUNT);
+    Q_.resize(MODE_COUNT);
+    R_.resize(MODE_COUNT);
+
+    // Transition matrix π
+    std::vector<double> pi_flat;
+    nh_.param("jmf/pi", pi_flat,
+              std::vector<double>(MODE_COUNT*MODE_COUNT, 1.0/MODE_COUNT));
+    pi_ = Eigen::Map<Eigen::MatrixXd>(pi_flat.data(),
+                                      MODE_COUNT, MODE_COUNT);
+
+    // Initial mode probabilities β₀
+    std::vector<double> beta0;
+    nh_.param("jmf/beta0", beta0,
+              std::vector<double>(MODE_COUNT, 1.0/MODE_COUNT));
+    beta_ = Eigen::Map<Eigen::VectorXd>(beta0.data(), MODE_COUNT);
+
+    // Per-mode Q and R
+    for (int i = 0; i < MODE_COUNT; ++i) {
+      filters_[i].x = Eigen::VectorXd::Zero(STATE_DIM);
+      filters_[i].P = Eigen::MatrixXd::Identity(STATE_DIM, STATE_DIM) * 1e-3;
+
+      std::vector<double> Qf, Rf;
+      nh_.param("jmf/Q" + std::to_string(i), Qf,
+                std::vector<double>(STATE_DIM*STATE_DIM, 1e-3));
+      nh_.param("jmf/R" + std::to_string(i), Rf,
+                std::vector<double>(MEAS_DIM*MEAS_DIM, 1e-2));
+
+      Q_[i] = Eigen::Map<Eigen::MatrixXd>(Qf.data(), STATE_DIM, STATE_DIM);
+      R_[i] = Eigen::Map<Eigen::MatrixXd>(Rf.data(), MEAS_DIM, MEAS_DIM);
+    }
+  }
+
+  //── 2) EKF Prediction for all modes ────────────────────────
+  void imuCb(const sensor_msgs::Imu::ConstPtr& imu)
+{
+  double dt = (imu->header.stamp - last_time_).toSec();
+  if (dt <= 0) return;
+
+  beta_      = pi_.transpose() * beta_;
+  last_time_ = imu->header.stamp;
+
+  for (int j = 0; j < MODE_COUNT; ++j) {
+    auto &f = filters_[j];
+
+    // Unpack 6-state vector
+    double X     = f.x(0);
+    double Y     = f.x(1);
+    double psi   = f.x(2);
+    double v     = f.x(3);
+    double delta = f.x(4);
+    double bg    = f.x(5);
+
+    // Nonlinear bicycle+lag model
+    double dX     = v * std::cos(psi);
+    double dY     = v * std::sin(psi);
+    double dPsi   = (v / L_) * std::tan(delta);
+    double dv     = (r_w_ * omega_ - v) / tau_v_;
+    double dDelta = (delta_meas_   - delta)  / tau_delta_;
+    double dbg    = 0.0;  // gyro-bias random walk
+
+    // Euler integration
+    Eigen::VectorXd x_pred = Eigen::VectorXd::Zero(STATE_DIM);
+
+    x_pred << X + dX     * dt,
+              Y + dY     * dt,
+              psi + dPsi * dt,
+              v + dv     * dt,
+              delta + dDelta * dt,
+              bg + dbg   * dt;
+
+    // Jacobian F = I + (∂f/∂x)*dt
+    Eigen::MatrixXd F = Eigen::MatrixXd::Identity(STATE_DIM, STATE_DIM);
+    F(0,2) = -v * std::sin(psi)  * dt;   F(0,3) = std::cos(psi) * dt;
+    F(1,2) =  v * std::cos(psi)  * dt;   F(1,3) = std::sin(psi) * dt;
+    F(2,3) = (1.0 / L_)          * std::tan(delta) * dt;
+    F(2,4) = (v / L_)            * (1.0 / (std::cos(delta)*std::cos(delta))) * dt;
+    F(3,3) = 1.0 - dt / tau_v_;
+    F(4,4) = 1.0 - dt / tau_delta_;
+    // F(5,5) remains 1.0
+
+    // Covariance update
+    f.x = x_pred;
+    f.P = F * f.P * F.transpose() + Q_[j];
+  }
+}
+
+
+  //── 3) EKF Update + JMF mode‐prob update ───────────────────
+  void poseCb(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& pose)
+  {
+    updateAllModes(pose);
+    publishMixedState(pose->header.stamp);
+  }
+  
+  void jointCb(const sensor_msgs::JointState::ConstPtr& msg)
+    {
+      double sum_omega = 0.0;
+      int    count     = 0;
+
+      for (size_t i = 0; i < msg->name.size(); ++i) {
+        if (msg->name[i] == "steering_joint") {
+          delta_meas_ = msg->position[i];
+        }
+        else if (msg->name[i] == "left_wheel_joint" ||
+                 msg->name[i] == "right_wheel_joint") {
+          sum_omega += msg->velocity[i];
+          ++count;
+        }
+      }
+
+      if (count > 0) {
+        omega_ = sum_omega / count;
+      }
+    }
+
+  void updateAllModes(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& pose)
+  {
+    // Validate quaternion
+    const auto &q = pose->pose.pose.orientation;
+    double norm = q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w;
+    if (std::fabs(norm - 1.0) > 1e-3) {
+      ROS_WARN_THROTTLE(1.0,
+        "Skipping update: bad quaternion norm=%.3f", norm);
+      return;
+    }
+
+    // Build measurement z = [x, y, yaw]
+    Eigen::VectorXd z = Eigen::VectorXd::Zero(MEAS_DIM);
+    z << pose->pose.pose.position.x,
+         pose->pose.pose.position.y,
+         tf::getYaw(q);
+
+    // Prepare log‐likelihoods
+    std::vector<double> logL(MODE_COUNT,
+                             -std::numeric_limits<double>::infinity());
+    Eigen::MatrixXd H = Eigen::MatrixXd::Zero(MEAS_DIM, STATE_DIM);
+    H(0,0)=1; H(1,1)=1; H(2,2)=1;
+
+    // Per‐mode EKF update & compute log‐likelihood
+    for (int j = 0; j < MODE_COUNT; ++j) {
+      auto &f = filters_[j];
+      Eigen::VectorXd y = z - H*f.x;
+
+      // Debug: innovation check
+      if (!y.allFinite()) {
+        ROS_ERROR_STREAM_THROTTLE(1.0,
+          "Mode " << j << " innovation contains NaN: " << y.transpose());
+        continue;
+      }
+
+      Eigen::MatrixXd S = H*f.P*H.transpose() + R_[j];
+      double detS = S.determinant();
+
+      // Debug: innovation covariance check
+      if (!S.allFinite() || detS <= 0) {
+        ROS_ERROR_STREAM_THROTTLE(1.0,
+          "Mode " << j << " innovation covariance S invalid");
+        continue;
+      }
+
+      // Kalman gain + update
+      Eigen::MatrixXd K = f.P*H.transpose()*S.inverse();
+      f.x += K*y;
+      f.P = (Eigen::MatrixXd::Identity(STATE_DIM,STATE_DIM) - K*H)*f.P;
+
+      // Compute log‐likelihood
+      double expo     = -0.5 * y.transpose() * S.inverse() * y;
+      double logDenom = 0.5 * (MEAS_DIM*std::log(2*M_PI) + std::log(detS));
+      logL[j] = expo - logDenom;
+    }
+
+    // Normalize β via log-sum-exp
+    double maxLog = *std::max_element(logL.begin(), logL.end());
+    Eigen::VectorXd Lexp = Eigen::VectorXd::Zero(MODE_COUNT);
+    for (int j = 0; j < MODE_COUNT; ++j) {
+      Lexp[j] = std::exp(logL[j] - maxLog);
+    }
+
+    Eigen::VectorXd beta_new = Eigen::VectorXd::Zero(MODE_COUNT);
+    for (int j = 0; j < MODE_COUNT; ++j) {
+      beta_new[j] = beta_[j] * Lexp[j];
+    }
+    double s = beta_new.sum();
+    if (s > 1e-12) {
+      beta_ = beta_new / s;
+    } else {
+      ROS_WARN_THROTTLE(1.0,
+        "Likelihoods underflow; retaining previous β");
+    }
+
+    // Debug: check beta finite
+    if (!beta_.allFinite()) {
+      ROS_ERROR_STREAM_THROTTLE(1.0,
+        "beta contains NaN after normalization: " << beta_.transpose());
+    }
+
+    // Publish mode probabilities
+    sensor_msgs::JointState js;
+    js.header = pose->header;
+    for (int j = 0; j < MODE_COUNT; ++j) {
+      js.name.push_back(mode_names_[j]);
+      js.position.push_back(beta_[j]);
+    }
+    mode_prob_pub_.publish(js);
+  }
+
+  //── 4) Publish fused pose ──────────────────────────────────
+  void publishMixedState(const ros::Time& stamp)
+  {
+    // Debug: check per-mode states
+    for (int j = 0; j < MODE_COUNT; ++j) {
+      if (!filters_[j].x.allFinite()) {
+        ROS_ERROR_STREAM_THROTTLE(1.0,
+          "Mode " << j << " state x contains NaN: "
+          << filters_[j].x.transpose());
+      }
+    }
+
+    Eigen::VectorXd x_mix = Eigen::VectorXd::Zero(STATE_DIM);
+    for (int j = 0; j < MODE_COUNT; ++j) {
+      x_mix += beta_[j] * filters_[j].x;
+    }
+
+    geometry_msgs::PoseWithCovarianceStamped out;
+    out.header.stamp    = stamp;
+    out.header.frame_id = "map";
+    out.pose.pose.position.x = x_mix(0);
+    out.pose.pose.position.y = x_mix(1);
+
+    double yaw = x_mix(2);
+    out.pose.pose.orientation.z = sin(yaw/2);
+    out.pose.pose.orientation.w = cos(yaw/2);
+
+    state_pub_.publish(out);
+  }
+};
+
+int main(int argc, char** argv)
+{
+  ros::init(argc, argv, "jmf_node");
+  JmfNode node;
+  ros::spin();
+  return 0;
+}
+

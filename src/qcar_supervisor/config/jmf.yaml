@@ -1,14 +1,49 @@
-# qcar_supervisor/config/jmf.yaml
+# config/sup_jmf_params.yaml
+# ==============================================
+# Per-mode parameter sets for Jump Markov Filter
+# ==============================================
+model_length: 0.258
 
-# physical parameter
-model_length: 2.5
+# Process-noise & model geometry for each hypothesis
+mode_params:
+  # 0: Healthy mode
+  healthy:
+    L:   0.258
+    q:  [0.01,  0.01,  0.001, 1e-6, 1e-6, 1e-6]
 
-# process‐noise vector (same ordering as EKF)
-Q: [0.01,  0.01,  0.001,  1e-6,  1e-6,  1e-6]
+  # 1: Motor fault → expect large speed variability
+  motor_fault:
+    L:   0.258
+    q:  [0.50,  0.01,  0.001, 1e-6, 1e-6, 1e-6]
 
-# mode‐transition matrix Pi, flattened row‐major (here a 2×2 example)
-# [ p11, p12,
-#   p21, p22 ]
-Pi: [0.9,  0.1,
-     0.1,  0.9]
+  # 2: Steering fault → expect large yaw-rate noise
+  steering_fault:
+    L:   0.258
+    q:  [0.01,  0.01,  0.05,  1e-6, 1e-6, 1e-6]
 
+  # 3: IMU fault → expect drifting biases in accel
+  imu_fault:
+    L:   0.258
+    q:  [0.01,  0.01,  0.001, 1e-3, 1e-6, 1e-6]
+
+  # 4: Encoder fault → expect wheel slip / bias drift
+  encoder_fault:
+    L:   0.258
+    q:  [0.01,  0.01,  0.001, 1e-6, 1e-3, 1e-6]
+
+# Mode-transition matrix (5×5, row-major)
+pi: [
+  # from healthy
+  0.99,  0.01, 0.01, 0.01, 0.01,
+  # from motor_fault
+  0.02,  0.98, 0.00, 0.00, 0.00,
+  # from steering_fault
+  0.02,  0.00, 0.98, 0.00, 0.00,
+  # from imu_fault
+  0.02,  0.00, 0.00, 0.98, 0.00,
+  # from encoder_fault
+  0.02,  0.00, 0.00, 0.00, 0.98
+]
+
+# At what rate (Hz) to publish fused topics
+publish_rate: 10.0
