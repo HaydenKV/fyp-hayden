@@ -21,7 +21,7 @@ odometry:
 
 # --- INITIAL POSE (spawn pose in simulation) ---
 seed_from_params: true              # Initialize particles from config vs first odometry message
-overwrite_with_odom_on_first_msg: true   # snap to first odometry pose regardless of config
+overwrite_with_odom_on_first_msg: false   # snap to first odometry pose regardless of config
 init:
   x:   -4.3                         # Initial X position [m] (match your gazebo spawn)
   y:    3.0                         # Initial Y position [m] 
@@ -37,15 +37,15 @@ odom_twist_in_world: false          # false = body frame (typical), true = world
                                     # Gazebo usually provides body-frame velocities
 
 # --- PARTICLE FILTER CORE PARAMETERS ---
-particles: 50                      # Number of hypotheses (more = better accuracy, slower computation)
-resample_neff_ratio: 0.4            # Resample when effective particles < ratio * N
+particles: 120                      # Number of hypotheses (more = better accuracy, slower computation)
+resample_neff_ratio: 0.6            # Resample when effective particles < ratio * N was 0.4
                                     # Lower = more frequent resampling (maintains diversity)
 
 # --- MOTION MODEL PARAMETERS ---
 motion_noise:
-  sigma_x:   0.02                   # Process noise in X direction [m/√s]
-  sigma_y:   0.02                   # Process noise in Y direction [m/√s] 
-  sigma_yaw: 0.005                  # Process noise in yaw [rad/√s]
+  sigma_x:   0.05                  # Process noise in X direction [m/√s]
+  sigma_y:   0.05                  # Process noise in Y direction [m/√s] 
+  sigma_yaw: 0.01                  # Process noise in yaw [rad/√s]
 # These parameters model motion uncertainty:
 # - Larger values = particles spread out more during motion
 # - Tune based on your robot's motion accuracy
@@ -60,7 +60,7 @@ association:
 confirm_hits: 2                     # Observations required before landmark becomes "confirmed"
                                     # Higher = fewer but more reliable landmarks
 
-min_new_lm_dist: 0.35               # Minimum distance to create new landmark [m]
+min_new_lm_dist: 0.15               # Minimum distance to create new landmark [m]
                                     # Prevents map fragmentation from duplicate detections
                                     # Should be > expected cone detection noise
 
