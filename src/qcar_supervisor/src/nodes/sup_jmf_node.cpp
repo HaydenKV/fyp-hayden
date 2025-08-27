@@ -50,23 +50,47 @@ public:
       "imu_fault",
       "encoder_fault"
     };
-    for(int i = 0; i < JumpMarkovFilter::M; ++i) {
+    for(int i = 0; i < JumpMarkovFilter::M; ++i){
       ros::NodeHandle mnh(pnh_, "mode_params/" + mode_names[i]);
-      // model length
+
+      // 1) model length
       mnh.param("L", mode_params_[i].L, 0.258);
-      // process‐noise vector
-      std::vector<double> qv;
-      mnh.param("q", qv, std::vector<double>{});
-      if(qv.size() != KinematicModel::STATE_SIZE) {
-        ROS_FATAL_STREAM("[JMF] mode_params/" << mode_names[i]
-                         << "/q must have "
-                         << KinematicModel::STATE_SIZE << " elements");
-        ros::shutdown();
-        return;
+      ROS_INFO_STREAM("[JMF] Loaded mode " << mode_names[i]
+                      << " L=" << mode_params_[i].L);
+
+      // 2) process‐noise vector via XmlRpc
+      XmlRpc::XmlRpcValue xml_q;
+      if (!mnh.getParam("q", xml_q))
+      {
+        ROS_FATAL_STREAM("[JMF] mode_params/"
+                        << mode_names[i] << "/q not found");
+        ros::shutdown(); return;
       }
-      for(int j = 0; j < KinematicModel::STATE_SIZE; ++j) {
-        mode_params_[i].q(j) = qv[j];
+      if (xml_q.getType() != XmlRpc::XmlRpcValue::TypeArray ||
+          xml_q.size()     != KinematicModel::STATE_SIZE)
+      {
+        ROS_FATAL_STREAM("[JMF] mode_params/"
+                        << mode_names[i] << "/q must have "
+                        << KinematicModel::STATE_SIZE << " elements");
+        ros::shutdown(); return;
       }
+
+      for (int j = 0; j < KinematicModel::STATE_SIZE; ++j)
+      {
+        if      (xml_q[j].getType() == XmlRpc::XmlRpcValue::TypeDouble)
+          mode_params_[i].q(j) = static_cast<double>(xml_q[j]);
+        else if (xml_q[j].getType() == XmlRpc::XmlRpcValue::TypeInt)
+          mode_params_[i].q(j) = static_cast<int>(xml_q[j]);
+        else
+        {
+          ROS_FATAL_STREAM("[JMF] mode_params/"
+                          << mode_names[i] << "/q["<<j<<"] is not numeric");
+          ros::shutdown(); return;
+        }
+      }
+
+      ROS_INFO_STREAM("[JMF] mode_params/"<<mode_names[i]
+                    <<" q = "<<mode_params_[i].q.transpose());
     }
 
     // 2) Load mode‐transition matrix Pi

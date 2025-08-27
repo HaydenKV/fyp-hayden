@@ -1,4 +1,4 @@
-# config/sup_jmf_params.yaml
+# config/jmf.yaml
 # ==============================================
 # Per-mode parameter sets for Jump Markov Filter
 # ==============================================
@@ -9,27 +9,27 @@ mode_params:
   # 0: Healthy mode
   healthy:
     L:   0.258
-    q:  [0.01,  0.01,  0.001, 1e-6, 1e-6, 1e-6]
+    q:  [0.01,  0.01,  0.001, !!float 1e-6, !!float 1e-6, !!float 1e-6]
 
   # 1: Motor fault → expect large speed variability
   motor_fault:
     L:   0.258
-    q:  [0.50,  0.01,  0.001, 1e-6, 1e-6, 1e-6]
+    q:  [0.50,  0.01,  0.001, !!float 1e-6, !!float 1e-6, !!float 1e-6]
 
   # 2: Steering fault → expect large yaw-rate noise
   steering_fault:
     L:   0.258
-    q:  [0.01,  0.01,  0.05,  1e-6, 1e-6, 1e-6]
+    q:  [0.01,  0.01,  0.05,  !!float 1e-6, !!float 1e-6, !!float 1e-6]
 
   # 3: IMU fault → expect drifting biases in accel
   imu_fault:
     L:   0.258
-    q:  [0.01,  0.01,  0.001, 1e-3, 1e-6, 1e-6]
+    q:  [0.01,  0.01,  0.001, !!float 1e-3, !!float 1e-6, !!float 1e-6]
 
   # 4: Encoder fault → expect wheel slip / bias drift
   encoder_fault:
     L:   0.258
-    q:  [0.01,  0.01,  0.001, 1e-6, 1e-3, 1e-6]
+    q:  [0.01,  0.01,  0.001, !!float 1e-6, !!float 1e-3, !!float 1e-6]
 
 # Mode-transition matrix (5×5, row-major)
 pi: [

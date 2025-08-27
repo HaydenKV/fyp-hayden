@@ -76,8 +76,7 @@
         name="sup_jmf_node"
         output="screen">
   <!-- load jmf params into this node's namespace -->
-    <rosparam ns="~"
-              file="$(find qcar_supervisor)/config/jmf.yaml"
+    <rosparam file="$(find qcar_supervisor)/config/jmf.yaml"
               command="load"/>
   </node>
 
