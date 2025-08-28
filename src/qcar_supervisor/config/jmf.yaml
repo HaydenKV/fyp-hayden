@@ -9,40 +9,68 @@ mode_params:
   # 0: Healthy mode
   healthy:
     L:   0.258
-    q:  [0.01,  0.01,  0.001, !!float 1e-6, !!float 1e-6, !!float 1e-6]
+    q:  [!!float 1e-4,  !!float 1e-4,  !!float 1e-4, !!float 1e-8, !!float 1e-8, !!float 1e-8]
+    
+    # Measurement noise covariance matrices (2×2, row-major)
+    # R_imu: covariance on [a_x, atan(δ)]
+    #   - increasing R_imu makes the filter trust the model prediction more (less aggressive IMU updates)
+    #   - decreasing R_imu makes the filter trust IMU readings more (stronger accelerometer correction)
+    R_imu: [0.05, 0.00,   0.00,   0.05]
+
+    # R_vel: covariance on [v_x, v_y] from EKF-odom
+    R_vel: [0.01, 0.00,   0.00,   0.01]
+
+    # R_pos: covariance on [x, y] from LiDAR or noisy odometry
+    R_pos: [0.0005, 0.00,  0.00,   0.0005]
 
   # 1: Motor fault → expect large speed variability
   motor_fault:
     L:   0.258
-    q:  [0.50,  0.01,  0.001, !!float 1e-6, !!float 1e-6, !!float 1e-6]
+    q:  [0.50,  0.01,  0.021, !!float 1e-6, !!float 1e-6, !!float 1e-6]
+
+    R_imu: [0.20, 0.00,   0.00,   0.20]
+    R_vel: [0.10, 0.00,   0.00,   0.10]    # higher velocity noise under motor fault
+    R_pos: [0.0050, 0.00,  0.00,   0.0050]
 
   # 2: Steering fault → expect large yaw-rate noise
   steering_fault:
     L:   0.258
     q:  [0.01,  0.01,  0.05,  !!float 1e-6, !!float 1e-6, !!float 1e-6]
 
+    R_imu: [0.20, 0.00,   0.00,   0.20]
+    R_vel: [0.05, 0.00,   0.00,   0.05]
+    R_pos: [0.0025, 0.00,  0.00,   0.0025]
+
   # 3: IMU fault → expect drifting biases in accel
   imu_fault:
     L:   0.258
-    q:  [0.01,  0.01,  0.001, !!float 1e-3, !!float 1e-6, !!float 1e-6]
+    q:  [0.01,  0.01,  0.021, !!float 1e-3, !!float 1e-6, !!float 1e-6]
+
+    R_imu: [1.00, 0.00,   0.00,   1.00]    # much larger accel noise under IMU fault
+    R_vel: [0.05, 0.00,   0.00,   0.05]
+    R_pos: [0.0025, 0.00,  0.00,   0.0025]
 
   # 4: Encoder fault → expect wheel slip / bias drift
   encoder_fault:
     L:   0.258
-    q:  [0.01,  0.01,  0.001, !!float 1e-6, !!float 1e-3, !!float 1e-6]
+    q:  [0.01,  0.01,  0.021, !!float 1e-6, !!float 1e-3, !!float 1e-6]
+
+    R_imu: [0.20, 0.00,   0.00,   0.20]
+    R_vel: [0.20, 0.00,   0.00,   0.20]    # higher assumed vel noise under encoder issues
+    R_pos: [0.0100, 0.00,  0.00,   0.0100]
 
 # Mode-transition matrix (5×5, row-major)
 pi: [
   # from healthy
-  0.99,  0.01, 0.01, 0.01, 0.01,
+  0.98,  0.005, 0.005, 0.005, 0.005,
   # from motor_fault
-  0.02,  0.98, 0.00, 0.00, 0.00,
+  0.05,  0.92, 0.01, 0.01, 0.01,
   # from steering_fault
-  0.02,  0.00, 0.98, 0.00, 0.00,
+  0.05,  0.01, 0.92, 0.01, 0.01,
   # from imu_fault
-  0.02,  0.00, 0.00, 0.98, 0.00,
+  0.05,  0.01, 0.01, 0.92, 0.01,
   # from encoder_fault
-  0.02,  0.00, 0.00, 0.00, 0.98
+  0.05,  0.01, 0.01, 0.01, 0.92
 ]
 
 # At what rate (Hz) to publish fused topics

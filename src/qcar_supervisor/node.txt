@@ -1,0 +1,301 @@
+// sup_jmf_node.cpp
+// ==============================
+// Jump Markov Filter supervisor node with per-mode R loading.
+// All filter hyper-parameters (Q, R_imu, R_pos, R_vel, Π) live in jmf.yaml.
+// ==============================
+
+#include <ros/ros.h>
+#include <xmlrpcpp/XmlRpcValue.h>
+#include <sensor_msgs/Imu.h>
+#include <sensor_msgs/JointState.h>
+#include <geometry_msgs/PoseWithCovarianceStamped.h>
+#include <nav_msgs/Odometry.h>
+#include <std_msgs/Float64MultiArray.h>
+#include <std_msgs/Int32.h>
+#include <tf/transform_broadcaster.h>
+
+#include <Eigen/Dense>
+#include <array>
+#include <vector>
+#include <cmath>
+#include <algorithm>
+
+#include "qcar_supervisor/JMF/JMF.h"
+#include "qcar_visnav/estimation/model/kinematic_model.h"
+
+using qcar_supervisor::JumpMarkovFilter;
+using qcar_supervisor::KinematicModel;
+using ModelInput  = KinematicModel::ModelInput;
+using ModelParams = KinematicModel::ModelParams;
+
+class JmfNode {
+public:
+  JmfNode(ros::NodeHandle& nh, ros::NodeHandle& pnh);
+
+  // callbacks
+  void imuCallback(const sensor_msgs::Imu::ConstPtr& msg);
+  void poseCallback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg);
+  void noisyPosCallback(const nav_msgs::Odometry::ConstPtr& msg);
+  void velCallback(const nav_msgs::Odometry::ConstPtr& msg);
+  void timerPublishCallback(const ros::TimerEvent&);
+  void jointCallback(const sensor_msgs::JointState::ConstPtr& msg);  // <-- declaration only
+
+private:
+  template<typename T, int SIZE>
+  void loadVector(const ros::NodeHandle &nh,
+                  const std::string       &key,
+                  Eigen::Matrix<T,SIZE,1> &vec);
+
+  Eigen::Matrix2d loadMatrix2d(const ros::NodeHandle &nh,
+                               const std::string       &key);
+
+  void publish();
+
+  ros::NodeHandle                                   nh_, pnh_;
+  ros::Subscriber                                   imu_sub_, pose_sub_,
+                                                    noisy_pos_sub_, vel_sub_,
+                                                    joint_sub_;
+  ros::Publisher                                    fused_pub_, modes_pub_, mode_pub_;
+  ros::Timer                                        publish_timer_;
+  ros::Time                                         last_time_;
+  double                                            delta_meas_, omega_, publish_rate_;
+
+  JumpMarkovFilter                                  jmf_;
+  std::array<ModelParams, JumpMarkovFilter::M>      mode_params_;
+  std::array<Eigen::Matrix2d, JumpMarkovFilter::M>  R_imu_modes_,
+                                                    R_pos_modes_,
+                                                    R_vel_modes_;
+  Eigen::MatrixXd                                   Pi_;
+};
+
+//------------------------------------------------------------------------------
+JmfNode::JmfNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
+  : nh_(nh), pnh_(pnh), delta_meas_(0.0), omega_(0.0)
+{
+  last_time_ = ros::Time::now();
+  ROS_INFO_STREAM("[JMF] Private namespace: " << pnh_.getNamespace());
+
+  static const std::array<std::string,JumpMarkovFilter::M> mode_names = {
+    "healthy","motor_fault","steering_fault","imu_fault","encoder_fault"
+  };
+
+  for(int i = 0; i < JumpMarkovFilter::M; ++i) {
+    ros::NodeHandle mnh(pnh_, "mode_params/" + mode_names[i]);
+
+    mnh.param("L", mode_params_[i].L, 0.258);
+    loadVector<double>(mnh, "q", mode_params_[i].q);
+
+    R_imu_modes_[i] = loadMatrix2d(mnh, "R_imu");
+    R_pos_modes_[i] = loadMatrix2d(mnh, "R_pos");
+    R_vel_modes_[i] = loadMatrix2d(mnh, "R_vel");
+  }
+
+  std::vector<double> pi_flat;
+  pnh_.param("pi", pi_flat, std::vector<double>{});
+  int N = std::sqrt(pi_flat.size());
+  Eigen::Map<const Eigen::Matrix<double,Eigen::Dynamic,Eigen::Dynamic,
+                Eigen::RowMajor>> Pi_map(pi_flat.data(), N, N);
+  Pi_ = Pi_map;
+
+  jmf_.setModelParams(mode_params_);
+  jmf_.setModeMeasurementNoise(R_imu_modes_, R_pos_modes_, R_vel_modes_);
+  auto x0 = KinematicModel::StateVec::Zero();
+  auto P0 = KinematicModel::StateMat::Identity() * 0.1;
+  Eigen::VectorXd mode0 = Eigen::VectorXd::Ones(N) / double(N);
+  jmf_.init(x0, P0, mode0, Pi_);
+
+  imu_sub_       = nh_.subscribe("/imu",           10, &JmfNode::imuCallback,       this);
+  pose_sub_      = nh_.subscribe("/pose_lidar",    10, &JmfNode::poseCallback,      this);
+  noisy_pos_sub_ = nh_.subscribe("/noisy_odom",    10, &JmfNode::noisyPosCallback,  this);
+  vel_sub_       = nh_.subscribe("/qcar/ekf/odom", 10, &JmfNode::velCallback,       this);
+  joint_sub_     = nh_.subscribe("/joint_states",  10, &JmfNode::jointCallback,     this);
+
+  fused_pub_  = nh_.advertise<nav_msgs::Odometry>         ("sup_jmf/odom",        10);
+  modes_pub_  = nh_.advertise<std_msgs::Float64MultiArray>("sup_jmf/mode_prob",   10);
+  mode_pub_   = nh_.advertise<std_msgs::Int32>            ("sup_jmf/current_mode",10);
+
+  pnh_.param("publish_rate", publish_rate_, 50.0);
+  publish_timer_ = nh_.createTimer(
+    ros::Duration(1.0/publish_rate_),
+    &JmfNode::timerPublishCallback,
+    this
+  );
+
+  ROS_INFO("[JMF] Node initialized successfully");
+}
+
+private:
+  // Utility to read a fixed-size Eigen vector from XmlRpc-backed param
+  template<typename T, int SIZE>
+  void loadVector(const ros::NodeHandle &nh,
+                  const std::string       &key,
+                  Eigen::Matrix<T,SIZE,1> &vec)
+  {
+    XmlRpc::XmlRpcValue xml;
+    if(!nh.getParam(key, xml)) {
+      ROS_FATAL_STREAM("[JMF] "<<nh.getNamespace()<<"/"<<key<<" missing");
+      ros::shutdown(); return;
+    }
+    if(xml.getType() != XmlRpc::XmlRpcValue::TypeArray ||
+       xml.size()     != SIZE) {
+      ROS_FATAL_STREAM("[JMF] "<<nh.getNamespace()<<"/"<<key
+                       <<" must be array["<<SIZE<<"]");
+      ros::shutdown(); return;
+    }
+    for(int i = 0; i < SIZE; ++i) {
+      if(xml[i].getType()==XmlRpc::XmlRpcValue::TypeDouble)
+        vec(i) = static_cast<double>(xml[i]);
+      else if(xml[i].getType()==XmlRpc::XmlRpcValue::TypeInt)
+        vec(i) = static_cast<int>(xml[i]);
+      else
+        vec(i) = std::stod(static_cast<std::string>(xml[i]));
+    }
+  }
+
+  // ── Callbacks ─────────────────────────────────────────────────────────
+  void imuCallback(const sensor_msgs::Imu::ConstPtr& msg) {
+    double dt = (msg->header.stamp - last_time_).toSec();
+    if(dt <= 0) return;
+    last_time_ = msg->header.stamp;
+
+    ModelInput u;
+    u.a_meas_x = msg->linear_acceleration.x;
+    u.a_meas_y = msg->linear_acceleration.y;
+    u.delta    = delta_meas_;
+    u.dt       = dt;
+
+    jmf_.setInput(u);
+    jmf_.predict(msg->header.stamp.toSec(), dt);
+
+    auto h = [&](auto const& x){
+      Eigen::Vector2d zh; zh << x(0)+x(4), std::atan(x(2));
+      return zh;
+    };
+    auto H = [&](auto const& x){
+      Eigen::Matrix<double,2,6> Hm = Eigen::Matrix<double,2,6>::Zero();
+      Hm(0,0)=1; Hm(0,4)=1;
+      Hm(1,2)=1.0/(1.0 + x(2)*x(2));
+      return Hm;
+    };
+
+    jmf_.updateImu(
+      (Eigen::Vector2d() << msg->linear_acceleration.x,
+                            std::atan(delta_meas_)).finished(),
+      h, H
+    );
+  }
+
+  void poseCallback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg) {
+    Eigen::Vector2d p;
+    p << msg->pose.pose.position.x,
+         msg->pose.pose.position.y;
+    jmf_.updateWithPosition(p, Eigen::Matrix2d::Identity() * 0.0 /*ignored*/);
+  }
+
+  void noisyPosCallback(const nav_msgs::Odometry::ConstPtr& msg) {
+    Eigen::Vector2d p;
+    p << msg->pose.pose.position.x,
+         msg->pose.pose.position.y;
+    jmf_.updateWithPosition(p, Eigen::Matrix2d::Identity() * 0.0);
+  }
+
+  void velCallback(const nav_msgs::Odometry::ConstPtr& msg) {
+    Eigen::Vector2d z;
+    z << msg->twist.twist.linear.x,
+         msg->twist.twist.linear.y;
+    auto h_vel = [&](auto const& x){ return (Eigen::Vector2d() << x(0), x(1)).finished(); };
+    auto H_vel = [&](auto const&){
+      Eigen::Matrix<double,2,6> Hm = Eigen::Matrix<double,2,6>::Zero();
+      Hm(0,0)=1; Hm(1,1)=1;
+      return Hm;
+    };
+    jmf_.updateVel(z, h_vel, H_vel);
+  }
+
+  void timerPublishCallback(const ros::TimerEvent&) {
+    publish();
+  }
+
+  // ── Define jointCallback here, *outside* the class ─────────────────────
+  void JmfNode::jointCallback(const sensor_msgs::JointState::ConstPtr& msg)
+  {
+    double sum = 0.0;
+    int cnt    = 0;
+    for(size_t i = 0; i < msg->name.size(); ++i) {
+      if (msg->name[i] == "steering_joint") {
+        delta_meas_ = msg->position[i];
+      } else if (msg->name[i]=="left_wheel_joint" || msg->name[i]=="right_wheel_joint") {
+        sum += msg->velocity[i];
+        ++cnt;
+      }
+    }
+    if (cnt > 0) {
+      omega_ = sum / double(cnt);
+    }
+  }
+
+  void publish() {
+    auto xf = jmf_.fusedState();
+    auto modes = jmf_.modeProb();
+    ros::Time now = ros::Time::now();
+
+    nav_msgs::Odometry odom;
+    odom.header.stamp    = now;
+    odom.header.frame_id = "odom";
+    odom.pose.pose.orientation = tf::createQuaternionMsgFromYaw(xf(2));
+    odom.twist.twist.linear.x  = xf(0);
+    odom.twist.twist.linear.y  = xf(1);
+    odom.twist.twist.angular.z = xf(2);
+    fused_pub_.publish(odom);
+
+    std_msgs::Float64MultiArray mm;
+    mm.data.assign(modes.data(), modes.data()+modes.size());
+    modes_pub_.publish(mm);
+
+    int best = std::distance(
+      modes.data(),
+      std::max_element(modes.data(), modes.data()+modes.size())
+    );
+    std_msgs::Int32 mi; mi.data = best;
+    mode_pub_.publish(mi);
+
+    static tf::TransformBroadcaster br;
+    tf::Transform tfm;
+    tfm.setOrigin({xf(0), xf(1), 0.0});
+    tfm.setRotation({
+      odom.pose.pose.orientation.x,
+      odom.pose.pose.orientation.y,
+      odom.pose.pose.orientation.z,
+      odom.pose.pose.orientation.w
+    });
+    br.sendTransform(tf::StampedTransform(tfm, now, "odom", "base_link"));
+  }
+
+  // ── Members ─────────────────────────────────────────────────────────
+  ros::NodeHandle                               nh_, pnh_;
+  ros::Subscriber                               imu_sub_, pose_sub_,
+                                                noisy_pos_sub_,
+                                                vel_sub_,
+                                                joint_sub_;
+  ros::Publisher                                fused_pub_, modes_pub_, mode_pub_;
+  ros::Timer                                    publish_timer_;
+
+  ros::Time                                     last_time_;
+  double                                        delta_meas_, omega_, publish_rate_;
+
+  JumpMarkovFilter                              jmf_;
+  std::array<ModelParams, JumpMarkovFilter::M>  mode_params_;
+  std::array<Eigen::Matrix2d, JumpMarkovFilter::M>
+                                                R_imu_modes_,
+                                                R_pos_modes_,
+                                                R_vel_modes_;
+  Eigen::MatrixXd                               Pi_;
+};
+
+int main(int argc, char** argv) {
+  ros::init(argc, argv, "sup_jmf_node");
+  ros::NodeHandle nh, pnh("~");
+  JmfNode node(nh, pnh);
+  ros::spin();
+  return 0;
+}
