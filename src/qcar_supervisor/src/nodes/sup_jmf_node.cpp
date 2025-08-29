@@ -1,8 +1,10 @@
 // sup_jmf_node.cpp
+// Jump Markov Filter node without any position updates
+// Only IMU-driven and velocity (EKF-odom) updates remain.
+
 #include <ros/ros.h>
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/JointState.h>
-#include <geometry_msgs/PoseWithCovarianceStamped.h>
 #include <nav_msgs/Odometry.h>
 #include <std_msgs/Float64MultiArray.h>
 #include <std_msgs/Int32.h>
@@ -35,7 +37,6 @@ public:
     // allocate per‐mode R arrays
     R_imu_modes_.resize(JumpMarkovFilter::M);
     R_vel_modes_.resize(JumpMarkovFilter::M);
-    R_pos_modes_.resize(JumpMarkovFilter::M);
 
     // 1) Load per‐mode ModelParams and R matrices
     static const std::array<std::string, JumpMarkovFilter::M> mode_names = {
@@ -54,7 +55,7 @@ public:
       ROS_INFO_STREAM("[JMF] Loaded mode " << mode_names[i]
                       << " L=" << mode_params_[i].L);
 
-      // 1b) process‐noise vector (assumes correct size)
+      // 1b) process‐noise vector
       std::vector<double> q_vec;
       mnh.getParam("q", q_vec);
       mode_params_[i].q = Eigen::Map<
@@ -63,9 +64,8 @@ public:
       ROS_INFO_STREAM("[JMF] mode_params/" << mode_names[i]
                       << " q = " << mode_params_[i].q.transpose());
 
-      // 1c) measurement noise covariances (all 2×2, row-major flat arrays)
+      // 1c) measurement noise covariances (IMU)
       std::vector<double> buf;
-
       mnh.getParam("R_imu", buf);
       R_imu_modes_[i] = Eigen::Map<
         const Eigen::Matrix<double,2,2,Eigen::RowMajor>
@@ -73,19 +73,13 @@ public:
       ROS_INFO_STREAM("[JMF] mode_params/" << mode_names[i] 
                       << " R_imu =\n" << R_imu_modes_[i]);
 
+      // 1d) measurement noise covariances (velocity)
       mnh.getParam("R_vel", buf);
       R_vel_modes_[i] = Eigen::Map<
         const Eigen::Matrix<double,2,2,Eigen::RowMajor>
       >(buf.data());
       ROS_INFO_STREAM("[JMF] mode_params/" << mode_names[i] 
                       << " R_vel =\n" << R_vel_modes_[i]);
-
-      mnh.getParam("R_pos", buf);
-      R_pos_modes_[i] = Eigen::Map<
-        const Eigen::Matrix<double,2,2,Eigen::RowMajor>
-      >(buf.data());
-      ROS_INFO_STREAM("[JMF] mode_params/" << mode_names[i] 
-                      << " R_pos =\n" << R_pos_modes_[i]);
     }
 
     // 2) Load mode‐transition matrix Pi
@@ -93,7 +87,7 @@ public:
     pnh_.param("pi", pi_flat, std::vector<double>{});
     int N = std::sqrt(pi_flat.size());
     if (N*N != (int)pi_flat.size()) {
-      ROS_FATAL_STREAM("[JMF] ~pi size " << pi_flat.size()
+      ROS_FATAL_STREAM("[JMF] pi size " << pi_flat.size()
                        << " is not a perfect square");
       ros::shutdown();
       return;
@@ -102,6 +96,8 @@ public:
                    Eigen::RowMajor>> Pi_map(pi_flat.data(), N, N);
     Pi_ = Pi_map;
 
+    ROS_INFO_STREAM("[JMF] Loaded π =\n" << Pi_);
+
     // 3) Initialize JumpMarkovFilter
     jmf_.setModelParams(mode_params_);
     auto x0 = KinematicModel::StateVec::Zero();
@@ -109,19 +105,23 @@ public:
     Eigen::VectorXd mode0 = Eigen::VectorXd::Ones(N) / double(N);
     jmf_.init(x0, P0, mode0, Pi_);
 
-    // 4) Subscribers
-    imu_sub_       = nh_.subscribe("/imu",           10, &JmfNode::imuCallback,    this);
-    pose_sub_      = nh_.subscribe("/pose_lidar",    10, &JmfNode::poseCallback,   this);
-    joint_sub_     = nh_.subscribe("/joint_states",  10, &JmfNode::jointCallback,  this);
-    noisy_pos_sub_ = nh_.subscribe("/noisy_odom",    10, &JmfNode::noisyPosCallback,this);
-    vel_sub_       = nh_.subscribe("/qcar/ekf/odom", 10, &JmfNode::velCallback,    this);
+    // 4) Subscribers (only IMU, EKF-odom, and joints)
+    imu_sub_   = nh_.subscribe("/imu",           10, 
+                  &JmfNode::imuCallback,    this);
+    vel_sub_   = nh_.subscribe("/qcar/ekf/odom", 10, 
+                  &JmfNode::velCallback,    this);
+    joint_sub_ = nh_.subscribe("/joint_states",  10, 
+                  &JmfNode::jointCallback,  this);
 
     // 5) Publishers
-    fused_pub_ = nh_.advertise<nav_msgs::Odometry>("sup_jmf/odom",         10);
-    modes_pub_ = nh_.advertise<std_msgs::Float64MultiArray>("sup_jmf/mode_prob",10);
-    mode_pub_  = nh_.advertise<std_msgs::Int32>      ("sup_jmf/current_mode",10);
+    fused_pub_ = nh_.advertise<nav_msgs::Odometry>(
+                  "sup_jmf/odom",         10);
+    modes_pub_ = nh_.advertise<std_msgs::Float64MultiArray>(
+                  "sup_jmf/mode_prob",    10);
+    mode_pub_  = nh_.advertise<std_msgs::Int32>(
+                  "sup_jmf/current_mode", 10);
 
-    // 6) Timer for fixed‐rate publish
+    // 6) Timer for publish
     pnh_.param("publish_rate", publish_rate_, 50.0);
     ROS_INFO_STREAM("[JMF] Publishing at " << publish_rate_ << " Hz");
     publish_timer_ = nh_.createTimer(
@@ -134,7 +134,7 @@ public:
   }
 
 private:
-  // ── 1) IMU‐driven predict + partial update ──────────────────────────
+  // IMU‐driven predict + partial update (no position fusion)
   void imuCallback(const sensor_msgs::Imu::ConstPtr& msg) {
     double dt = (msg->header.stamp - last_time_).toSec();
     if (dt <= 0.0) return;
@@ -149,6 +149,7 @@ private:
     jmf_.setInput(u);
     jmf_.predict(msg->header.stamp.toSec(), dt);
 
+    // IMU measurement model: [a_x; atan(delta)]
     auto h = [&](auto const& x){
       Eigen::Vector2d zh;
       zh << x(0) + x(4),
@@ -167,40 +168,17 @@ private:
          std::atan(delta_meas_);
 
     int best = jmf_.mostLikelyMode();
-    const Eigen::Matrix2d& R = R_imu_modes_[best];
-    jmf_.update(z, h, H, R);
+    jmf_.update(z, h, H, R_imu_modes_[best]);
   }
 
-  // ── 2) LiDAR‐pose update ────────────────────────────────────────────
-  void poseCallback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg) {
-    Eigen::Vector2d p;
-    p << msg->pose.pose.position.x,
-         msg->pose.pose.position.y;
-
-    int best = jmf_.mostLikelyMode();
-    const Eigen::Matrix2d& Rpos = R_pos_modes_[best];
-    jmf_.updateWithPosition(p, Rpos);
-  }
-
-  // ── 3) Noisy‐odom fallback ──────────────────────────────────────────
-  void noisyPosCallback(const nav_msgs::Odometry::ConstPtr& msg) {
-    Eigen::Vector2d p;
-    p << msg->pose.pose.position.x,
-         msg->pose.pose.position.y;
-
-    int best = jmf_.mostLikelyMode();
-    const Eigen::Matrix2d& Rpos = R_pos_modes_[best];
-    jmf_.updateWithPosition(p, Rpos);
-  }
-
-  // ── 4) EKF‐odom velocity update ────────────────────────────────────
+  // EKF‐odom velocity update
   void velCallback(const nav_msgs::Odometry::ConstPtr& msg) {
     Eigen::Vector2d z;
     z << msg->twist.twist.linear.x,
          msg->twist.twist.linear.y;
 
     int best = jmf_.mostLikelyMode();
-    const Eigen::Matrix2d& Rvel = R_vel_modes_[best];
+    const auto& Rvel = R_vel_modes_[best];
 
     auto h_vel = [&](auto const& x){
       Eigen::Vector2d zh;
@@ -216,10 +194,9 @@ private:
     jmf_.update(z, h_vel, H_vel, Rvel);
   }
 
-  // ── 5) Steering & wheel‐rate input ─────────────────────────────────
+  // Steering & wheel‐rate input (for IMU callback’s u.delta)
   void jointCallback(const sensor_msgs::JointState::ConstPtr& msg) {
-    double sum = 0;
-    int cnt = 0;
+    double sum = 0; int cnt = 0;
     for (size_t i = 0; i < msg->name.size(); ++i) {
       if (msg->name[i] == "steering_joint")
         delta_meas_ = msg->position[i];
@@ -232,16 +209,12 @@ private:
     if (cnt > 0) omega_ = sum / cnt;
   }
 
-  // ── Timer‐driven publish ────────────────────────────────────────────
+  // Timer‐driven publish fused odom, modes & tf
   void timerPublishCallback(const ros::TimerEvent&) {
-    publish();
-  }
-
-  // ── 6) Publish fused odom, modes & tf ───────────────────────────────
-  void publish() {
     auto xf = jmf_.fusedState();
     ros::Time now = ros::Time::now();
 
+    // Publish fused odometry
     nav_msgs::Odometry odom;
     odom.header.stamp    = now;
     odom.header.frame_id = "odom";
@@ -252,16 +225,44 @@ private:
     odom.twist.twist.angular.z = xf(2);
     fused_pub_.publish(odom);
 
+    // Publish mode probabilities
     auto modes = jmf_.modeProb();
     std_msgs::Float64MultiArray mm;
-    mm.data.assign(modes.data(), modes.data() + modes.size());
+    mm.data.assign(modes.data(), modes.data()+modes.size());
     modes_pub_.publish(mm);
 
-    int best = jmf_.mostLikelyMode();
-    std_msgs::Int32 mi;
-    mi.data = best;
-    mode_pub_.publish(mi);
+    // Publish best mode
+    // std_msgs::Int32 mi;
+    // mi.data = jmf_.mostLikelyMode();
+    // mode_pub_.publish(mi);
+    // class members:
+    int declared_mode_   = 0;
+    int stable_count_    = 0;
+    const int minStable  = 5;      // need 5 consecutive cycles
+    const double Pthresh = 0.8;    // require >80% to switch
 
+    // inside timerPublishCallback:
+    auto probs = jmf_.modeProb();
+    int best = std::distance(probs.data(),
+                            std::max_element(probs.data(),
+                                              probs.data()+probs.size()));
+    if (best == declared_mode_) {
+      stable_count_ = 0;
+    } else if (probs(best) > Pthresh) {
+      if (++stable_count_ >= minStable) {
+        declared_mode_ = best;
+        stable_count_ = 0;
+      }
+    } else {
+      stable_count_ = 0;
+    }
+
+// always publish declared_mode_
+std_msgs::Int32 mi; mi.data = declared_mode_;
+mode_pub_.publish(mi);
+
+
+    // Broadcast base_link TF
     static tf::TransformBroadcaster br;
     tf::Transform tfm;
     tfm.setOrigin({xf(0), xf(1), 0.0});
@@ -271,30 +272,21 @@ private:
       odom.pose.pose.orientation.z,
       odom.pose.pose.orientation.w
     });
-    br.sendTransform(tf::StampedTransform(tfm, now, "odom", "base_link"));
+    br.sendTransform(tf::StampedTransform(tfm, now,
+                                          "odom", "base_link"));
   }
 
-  // ── Members ─────────────────────────────────────────────────────────
-  ros::NodeHandle                               nh_, pnh_;
-  ros::Subscriber                               imu_sub_, pose_sub_,
-                                                joint_sub_,
-                                                noisy_pos_sub_, vel_sub_;
-  ros::Publisher                                fused_pub_,
-                                                modes_pub_, mode_pub_;
-  ros::Timer                                    publish_timer_;
-
-  ros::Time                                     last_time_;
-  double                                        delta_meas_, omega_,
-                                                publish_rate_;
-
-  JumpMarkovFilter                              jmf_;
-  std::array<ModelParams, JumpMarkovFilter::M>  mode_params_;
-  Eigen::MatrixXd                               Pi_;
-
-  // per‐mode measurement covariances
-  std::vector<Eigen::Matrix2d>                  R_imu_modes_;
-  std::vector<Eigen::Matrix2d>                  R_vel_modes_;
-  std::vector<Eigen::Matrix2d>                  R_pos_modes_;
+  // Members
+  ros::NodeHandle                     nh_, pnh_;
+  ros::Subscriber                     imu_sub_, vel_sub_, joint_sub_;
+  ros::Publisher                      fused_pub_, modes_pub_, mode_pub_;
+  ros::Timer                          publish_timer_;
+  ros::Time                           last_time_;
+  double                              delta_meas_, omega_, publish_rate_;
+  JumpMarkovFilter                    jmf_;
+  std::array<ModelParams, JumpMarkovFilter::M> mode_params_;
+  Eigen::MatrixXd                     Pi_;
+  std::vector<Eigen::Matrix2d>        R_imu_modes_, R_vel_modes_;
 };
 
 int main(int argc, char** argv) {

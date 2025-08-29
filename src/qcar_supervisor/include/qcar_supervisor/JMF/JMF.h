@@ -60,9 +60,6 @@ public:
               const HmatType&         H_fun,
               const Eigen::MatrixXd&  R);
 
-  void updateWithPosition(const Eigen::Vector2d& pos_meas,
-                          const Eigen::Matrix2d& R_pos);
-
   StateVec   fusedState() const;
   StateMat   fusedCovar() const;
   ModeProb   modeProb()   const;

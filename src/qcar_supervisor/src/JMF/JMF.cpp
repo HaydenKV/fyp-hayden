@@ -87,29 +87,6 @@ void JumpMarkovFilter::predict(double t, double dt)
   }
 }
 
-void JumpMarkovFilter::updateWithPosition(
-  const Eigen::Vector2d& meas,
-  const Eigen::Matrix2d& R_pos)
-{
-  // measurement = [vx; vy]
-  auto h_fun = [&](auto const& x_pred){
-    Eigen::Vector2d zh;
-    zh << x_pred(0), x_pred(1);
-    return zh;
-  };
-
-  // Jacobian picks state indices 0,1
-  auto H_fun = [&](auto const&){
-    Eigen::Matrix<double,2,KinematicModel::STATE_SIZE> Hm;
-    Hm.setZero();
-    Hm(0,0) = 1.0;
-    Hm(1,1) = 1.0;
-    return Hm;
-  };
-
-  update(meas, h_fun, H_fun, R_pos);
-}
-
 void JumpMarkovFilter::update(
   const Eigen::VectorXd&  z,
   const HfunType&         h_fun,
@@ -138,13 +115,12 @@ void JumpMarkovFilter::update(
     // floor it to avoid underflows
     likelihoods(i) = std::max(raw_like, 1e-12);
 
-
-    ROS_INFO_STREAM(
-      "update i="<<i
-      <<"  maha="<<maha
-      <<"  detS="<<detS
-      <<"  like="<<likelihoods(i)
-    );
+    // ROS_INFO_STREAM(
+    //   "update i="<<i
+    //   <<"  maha="<<maha
+    //   <<"  detS="<<detS
+    //   <<"  like="<<likelihoods(i)
+    // );
 
   }
 
