@@ -86,5 +86,11 @@
         type="noisy_pos_node"
         name="noisy_pos_node"
         output="screen"/>
-</launch>
 
+  <!-- ================= Mode-Probability Plotter ================= -->
+  <node pkg="qcar_supervisor"
+        type="plot_mode_probs.py"
+        name="mode_probability_plotter"
+        output="screen"
+        respawn="false"/>
+</launch>

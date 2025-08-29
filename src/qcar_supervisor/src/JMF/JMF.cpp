@@ -1,3 +1,5 @@
+#include <ros/ros.h>       // bring in ROS_INFO_STREAM, ROS_INFO_STREAM, etc.
+#include <ros/console.h>   // (optional) for more console control
 #include "qcar_supervisor/JMF/JMF.h"
 #include <cmath>
 
@@ -27,6 +29,7 @@ void JumpMarkovFilter::init(
 {
   mode_prob_      = init_mode_prob;
   transition_mat_ = transition_mat;
+  ROS_INFO_STREAM("[JMF] transition_mat_ =\n" << transition_mat_);
   for(int i = 0; i < M; ++i) {
     x_upd_[i] = x0;
     P_upd_[i] = P0;
@@ -57,11 +60,18 @@ void JumpMarkovFilter::predict(double t, double dt)
       P_mix[j] += w * (P_upd_[i] + d * d.transpose());
     }
     if(norm > 1e-8) P_mix[j] /= norm;
+    // ROS_INFO_STREAM(
+    //   "mix j="<<j
+    //   <<"  norm="<<norm
+    //   <<"\n  x_mix["<<j<<"]="<<x_mix[j].transpose()
+    //   <<"\n  trace(P_mix["<<j<<"])="<<P_mix[j].trace()
+    // );
   }
 
   // 2) EKF predict for each mode using its own params
   for(int i = 0; i < M; ++i) {
     model_.setParams(mode_params_[i]);
+
     model_.setInput(input_);
 
     x_pred_[i] = model_.predict(x_mix[i], t, dt);
@@ -69,6 +79,11 @@ void JumpMarkovFilter::predict(double t, double dt)
     StateMat F = model_.getProcessJacobian(x_mix[i], dt);
     StateMat Q = model_.getProcessNoise(dt);
     P_pred_[i] = F * P_mix[i] * F.transpose() + Q;
+    // ROS_INFO_STREAM(
+    //   "pred i="<<i
+    //   <<"  x_pred="<<x_pred_[i].transpose()
+    //   <<"  trace(P_pred)="<<P_pred_[i].trace()
+    // );
   }
 }
 
@@ -119,8 +134,21 @@ void JumpMarkovFilter::update(
     double detS            = S.determinant();
     double norm_const      = 1.0 / (std::pow(2.0 * M_PI, z.size()/2.0)
                                  * std::sqrt(detS));
-    likelihoods(i)         = norm_const * std::exp(-0.5 * maha);
+    double raw_like = norm_const * std::exp(-0.5 * maha);
+    // floor it to avoid underflows
+    likelihoods(i) = std::max(raw_like, 1e-12);
+
+
+    ROS_INFO_STREAM(
+      "update i="<<i
+      <<"  maha="<<maha
+      <<"  detS="<<detS
+      <<"  like="<<likelihoods(i)
+    );
+
   }
+
+  // ROS_INFO_STREAM("raw likelihoods = "<<likelihoods.transpose());
 
   // Update mode probabilities
   ModeProb prior = transition_mat_.transpose() * mode_prob_;

@@ -82,6 +82,13 @@ target_link_libraries(qcar_visnav_lib
 )
 
 ## —————————————————————————————————————————————————————————————
+## Install Python scripts via catkin helper
+catkin_install_python(PROGRAMS
+  scripts/plot_mode_probs.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
+## —————————————————————————————————————————————————————————————
 ## JMF library
 add_library(jmf_lib
   src/JMF/JMF.cpp

@@ -4,7 +4,7 @@
 #include "qcar_supervisor/noise_pos/noise_pos.h"
 
 ros::Publisher noisy_pub;
-qcar_supervisor::PositionNoiser pos_noiser(0.05, 0.05); // 5cm stddev
+qcar_supervisor::PositionNoiser pos_noiser(0.0001, 0.0001); // 5cm (0.05) stddev
 
 // Set your desired print frequency (Hz) here:
 const double print_hz = 10.0; // Change this value as needed
