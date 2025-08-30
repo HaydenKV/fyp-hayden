@@ -5,16 +5,16 @@
 
 # --- COORDINATE FRAMES ---
 frames:
-  map_frame: "odom"            # run entirely in ODOM (world-fixed frame for stability)
+  map_frame: "odom"            # run in odom frame
   odom_frame: "odom"
   base_frame: "base_footprint"
   lidar_frame: "lidar"
 
 # --- ODOMETRY SOURCE SELECTION ---
 odometry:
-  use_ekf: false                    # false = use ground truth (/odom), true = use EKF (/qcar/ekf/odom)
-  truth_topic: "/odom"              # Ground truth odometry from Gazebo
-  ekf_topic: "/qcar/ekf/odom"       # EKF velocity estimates from your velocity EKF
+  use_ekf: false               # false: /odom, true: /qcar/ekf/odom
+  truth_topic: "/odom"
+  ekf_topic: "/qcar/ekf/odom"
 
 # --- INITIAL POSE (spawn pose in simulation) ---
 seed_from_params: true
@@ -24,38 +24,61 @@ init:
   y:    3.0
   yaw: -3.14
 initial_spread:
-  x:   0.1
-  y:   0.1
-  yaw: 0.05
+  x:   0.05
+  y:   0.05
+  yaw: 0.03
 
-# --- ODOMETRY INTERPRETATION ---
-odom_buffer_window_sec: 3.0
+# --- ODOMETRY BUFFER ---
+odom_buffer_window_sec: 2.0
 
-# --- PARTICLE FILTER CORE PARAMETERS ---
-particles: 120
-resample_neff_ratio: 0.4
+# --- PARTICLE FILTER ---
+particles: 60
+resample_neff_ratio: 0.5
 
-# --- MOTION MODEL PARAMETERS ---
+# --- MOTION MODEL ---
 motion_noise:
   sigma_x:   0.05
   sigma_y:   0.05
   sigma_yaw: 0.03
 
-# --- DATA ASSOCIATION PARAMETERS ---
+# --- DATA ASSOCIATION (RB) ---
 association:
-  chi2_gate: 5.99     # Mahalanobis gate (95%)
-  euclid_gate: 0.5    # Euclidean pre-gate in meters (Phase 2)
+  chi2_gate: 9.21            # RB χ² (95%)
+  chi2_gate_world: 9.21      # world χ² (merge-before-birth)
+  euclid_gate: 0.5           # reserved (not used now)
 
 # --- LANDMARK MANAGEMENT ---
-confirm_hits: 4
-min_new_lm_dist: 0.21
-merge_R_scale: 7.0
-landmark_prior_var: 0.12
+confirm_hits: 2
+min_new_lm_dist: 0.3         # retained for completeness
+merge_R_scale: 5.0           # retained for completeness
+landmark_prior_var: 0.08
 
-# --- LANDMARK LIFECYCLE / PRUNING (Phase 2) ---
 landmarks:
-  prune_unconfirmed_misses: 8   # delete unconfirmed after 8 misses
-  prune_stale_misses: 25        # delete any landmark after 25 misses
-  unconfirmed_R_scale: 2.0      # inflate R for unconfirmed landmarks
+  prune_unconfirmed_misses: 10   # reserved (not used now)
+  prune_stale_misses: 40         # reserved (not used now)
+  unconfirmed_R_scale: 2.5
 
+# --- BIRTH BUFFER ---
+birth:
+  required_hits: 3
+  max_age: 10
+  promote_radius: 0.30
 
+# --- POSE PROPOSAL ---
+proposal:
+  max_sigma_trace: 0.20
+  sample_every_k: 0             # 0 = deterministic mean only
+
+# --- WEIGHT PENALTIES ---
+weight:
+  new_landmark_penalty: 1.0
+  fov_miss_penalty: 0.4
+
+# --- SENSOR FOV (for FoV-miss penalty only) ---
+sensor:
+  fov_range_max: 20.0
+  fov_bearing_deg: 90.0
+
+# --- LAP CONTROL ---
+lap:
+  freeze_after_first_loop: false

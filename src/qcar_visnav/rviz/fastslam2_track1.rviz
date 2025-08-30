@@ -51,7 +51,7 @@ Visualization Manager:
     # SLAM Particles (arrows)
     - Class: rviz/MarkerArray
       Name: SLAM Particles
-      Enabled: true
+      Enabled: false
       Marker Topic: /slam/particles
       Queue Size: 10
 
@@ -61,7 +61,7 @@ Visualization Manager:
       Enabled: true
       Topic: /slam/particles_pose
       Queue Size: 10
-      Color: 0; 255; 0
+      Color: 255; 0; 0
       Arrow Length: 0.3
 
     # SLAM Landmarks (best particle)
@@ -77,17 +77,17 @@ Visualization Manager:
       Enabled: true
       Topic: /slam/odom
       Shape: Arrow
-      Length: 0.6
+      Length: 0.4
       Color: 0; 255; 0
-      Alpha: 1.0
+      Alpha: 0.5
 
     # SLAM Odom (mean)
     - Class: rviz/Odometry
       Name: SLAM Odom (mean)
-      Enabled: true
+      Enabled: false
       Topic: /slam/odom_mean
       Shape: Arrow
-      Length: 0.6
+      Length: 0.4
       Color: 255; 0; 0
       Alpha: 1.0
 
@@ -109,6 +109,6 @@ Visualization Manager:
       Name: TopDown
       Target Frame: odom      # <-- was 'map'
       Angle: 0
-      Scale: 40
+      Scale: 80
       X: 0
       Y: 0

@@ -89,4 +89,59 @@ void measRBToWorld(double x, double y, double yaw,
   J = Rwl * Jlocal;
 }
 
+// Skew-symmetric 2D helper
+static inline Eigen::Matrix2d Skew2() {
+  Eigen::Matrix2d S; S << 0, -1, 1, 0; return S;
+}
+
+// Predict (r_hat, b_hat) plus Jacobians wrt pose (Gx: 2x3) and landmark (H: 2x2)
+void predictRBWithJacobians(double x, double y, double yaw,
+                            const Eigen::Vector2d& m_world,
+                            const LidarExtrinsics& ex,
+                            double& r_hat, double& b_hat,
+                            Eigen::Matrix<double,2,3>& Gx,
+                            Eigen::Matrix2d& H)
+{
+  // Reuse existing pieces
+  double lx, ly; Eigen::Matrix2d C;
+  worldToLidarDelta(x, y, yaw, m_world, ex, lx, ly, C); // C = d v_lidar / d m_world
+
+  const double eps = 1e-9;
+  const double r = std::sqrt(std::max(eps, lx*lx + ly*ly));
+  r_hat = r;
+  b_hat = std::atan2(ly, lx);
+
+  // J_rb wrt (lx, ly)
+  Eigen::Matrix2d Jrb;
+  Jrb << lx/r,  ly/r,
+        -ly/(r*r), lx/(r*r);
+
+  // Landmark jacobian
+  H = Jrb * C;
+
+  // Pose jacobian Gx
+  // v_l = Rlw * (m - p_wl), with:
+  //   Rlw = R(yaw + ex.yaw)^T,  p_wl = [x;y] + R(yaw) * [ex.x; ex.y]
+  const Eigen::Vector2d ex_b(ex.x, ex.y);
+  const Eigen::Matrix2d Rwb = R(yaw);
+  const Eigen::Vector2d p_wl = Eigen::Vector2d(x, y) + Rwb * ex_b;
+  const double yaw_wl = yaw + ex.yaw;
+  const Eigen::Matrix2d Rlw = R(yaw_wl).transpose();
+  const Eigen::Vector2d d_w = m_world - p_wl;
+
+  // Derivatives of v_l wrt pose:
+  // dv/dx = -Rlw * [1;0]
+  // dv/dy = -Rlw * [0;1]
+  // dv/dyaw = (-Rlw*Skew2()) * d_w - Rlw * (R(yaw)*Skew2()*ex_b)
+  const Eigen::Vector2d dv_dx = - Rlw * Eigen::Vector2d::UnitX();
+  const Eigen::Vector2d dv_dy = - Rlw * Eigen::Vector2d::UnitY();
+  const Eigen::Vector2d dv_dyaw =
+      (-Rlw * Skew2()) * d_w - Rlw * (Rwb * (Skew2() * ex_b));
+
+  // Chain to RB
+  Gx.col(0) = Jrb * dv_dx;
+  Gx.col(1) = Jrb * dv_dy;
+  Gx.col(2) = Jrb * dv_dyaw;
+}
+
 }} // ns

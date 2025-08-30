@@ -28,6 +28,8 @@ public:
   // Configure noise parameters.
   void setNoise(const MotionNoise& n) { noise_ = n; }
 
+  const MotionNoise& noise() const { return noise_; }
+  
 private:
   MotionNoise noise_;
 };
