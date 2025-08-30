@@ -11,102 +11,51 @@ frames:
   lidar_frame: "lidar"
 
 # --- ODOMETRY SOURCE SELECTION ---
-# Choose between ground truth and EKF velocity estimates
 odometry:
-  use_ekf: true                    # false = use ground truth (/odom), true = use EKF (/qcar/ekf/odom)
+  use_ekf: false                    # false = use ground truth (/odom), true = use EKF (/qcar/ekf/odom)
   truth_topic: "/odom"              # Ground truth odometry from Gazebo
   ekf_topic: "/qcar/ekf/odom"       # EKF velocity estimates from your velocity EKF
-  # NOTE: For debugging, start with use_ekf=false to verify coordinate transforms
-  #       Then switch to use_ekf=true to test with realistic velocity estimates
 
 # --- INITIAL POSE (spawn pose in simulation) ---
-seed_from_params: true              # Initialize particles from config vs first odometry message
-overwrite_with_odom_on_first_msg: false   # snap to first odometry pose regardless of config
+seed_from_params: true
+overwrite_with_odom_on_first_msg: false
 init:
-  x:   -4.3                         # Initial X position [m] (match your gazebo spawn)
-  y:    3.0                         # Initial Y position [m] 
-  yaw: -3.14                        # Initial yaw [rad] (-180 degrees)
+  x:   -4.3
+  y:    3.0
+  yaw: -3.14
 initial_spread:
-  x:   0.05                         # Initial particle spread in X [m]
-  y:   0.05                         # Initial particle spread in Y [m]
-  yaw: 0.02                         # Initial particle spread in yaw [rad]
+  x:   0.1
+  y:   0.1
+  yaw: 0.05
 
 # --- ODOMETRY INTERPRETATION ---
-# Important: Check what coordinate frame your /odom topic uses for twist
-odom_twist_in_world: false          # false = body frame (typical), true = world frame
-                                    # Gazebo usually provides body-frame velocities
+odom_buffer_window_sec: 3.0
 
 # --- PARTICLE FILTER CORE PARAMETERS ---
-particles: 120                      # Number of hypotheses (more = better accuracy, slower computation)
-resample_neff_ratio: 0.6            # Resample when effective particles < ratio * N was 0.4
-                                    # Lower = more frequent resampling (maintains diversity)
+particles: 120
+resample_neff_ratio: 0.4
 
 # --- MOTION MODEL PARAMETERS ---
 motion_noise:
-  sigma_x:   0.05                  # Process noise in X direction [m/√s]
-  sigma_y:   0.05                  # Process noise in Y direction [m/√s] 
-  sigma_yaw: 0.01                  # Process noise in yaw [rad/√s]
-# These parameters model motion uncertainty:
-# - Larger values = particles spread out more during motion
-# - Tune based on your robot's motion accuracy
+  sigma_x:   0.05
+  sigma_y:   0.05
+  sigma_yaw: 0.03
 
 # --- DATA ASSOCIATION PARAMETERS ---
 association:
-  chi2_gate: 5.99                  # Mahalanobis distance threshold for association
-                                    # 16.27 = 99.9% confidence (2 DOF), 9.21 = 99%, 5.99 = 95%
-                                    # Start loose (16.27), tighten (5.99) if getting false associations
+  chi2_gate: 5.99     # Mahalanobis gate (95%)
+  euclid_gate: 0.5    # Euclidean pre-gate in meters (Phase 2)
 
 # --- LANDMARK MANAGEMENT ---
-confirm_hits: 2                     # Observations required before landmark becomes "confirmed"
-                                    # Higher = fewer but more reliable landmarks
+confirm_hits: 4
+min_new_lm_dist: 0.21
+merge_R_scale: 7.0
+landmark_prior_var: 0.12
 
-min_new_lm_dist: 0.15               # Minimum distance to create new landmark [m]
-                                    # Prevents map fragmentation from duplicate detections
-                                    # Should be > expected cone detection noise
+# --- LANDMARK LIFECYCLE / PRUNING (Phase 2) ---
+landmarks:
+  prune_unconfirmed_misses: 8   # delete unconfirmed after 8 misses
+  prune_stale_misses: 25        # delete any landmark after 25 misses
+  unconfirmed_R_scale: 2.0      # inflate R for unconfirmed landmarks
 
-merge_R_scale: 4.0                  # Uncertainty inflation factor when merging nearby detections
-                                    # Higher = more conservative merging (larger uncertainty)
 
-# --- MEASUREMENT NOISE SCALING ---
-measurement_noise_inflate:
-  range: 1.0                        # Scale factor for cone range uncertainty
-  bearing: 1.0                      # Scale factor for cone bearing uncertainty
-# Use values > 1.0 if cone tracker uncertainties are too optimistic
-
-# --- PUBLISHING RATES ---
-publish_rates_hz:
-  viz: 15                           # RViz visualization update rate [Hz]
-
-# --- SENSOR CONFIGURATION ---
-sensor:
-  lidar_rate_hz: 10                 # Expected LiDAR scan rate [Hz] (for reference)
-  lidar_angles: [-3.14, 3.14]      # LiDAR field of view [rad] (full 360°)
-
-# ============================
-# TUNING GUIDELINES
-# ============================
-#
-# FOR DEBUGGING (start with these):
-# - odometry/use_ekf: false (use ground truth first)
-# - particles: 50 (fewer particles for faster debugging)
-# - association/chi2_gate: 5.99 (tighter gating)
-#
-# FOR PERFORMANCE TUNING:
-# 1. If landmarks appear/disappear randomly:
-#    → Increase confirm_hits (e.g., 3-4)
-#    → Decrease chi2_gate (e.g., 9.21 → 5.99)
-#
-# 2. If too many duplicate landmarks:
-#    → Increase min_new_lm_dist (e.g., 0.5)
-#    → Increase merge_R_scale (e.g., 6.0)
-#
-# 3. If particle filter diverges:
-#    → Increase motion_noise values
-#    → Decrease resample_neff_ratio (e.g., 0.3)
-#
-# 4. If landmarks drift over time:
-#    → Check coordinate frame transforms
-#    → Verify odom_twist_in_world setting
-#    → Increase measurement_noise_inflate
-#
-# ============================

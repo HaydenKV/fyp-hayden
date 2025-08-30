@@ -1,4 +1,5 @@
 #include "qcar_visnav/slam/motion_model.h"
+#include "qcar_visnav/slam/particle.h"   // <-- needed for p.x/p.y/p.yaw
 #include <random>
 #include <cmath>
 

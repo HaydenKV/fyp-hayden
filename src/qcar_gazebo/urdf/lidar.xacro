@@ -16,6 +16,11 @@
                 <range>
                     <min>0.3</min>
                     <max>18</max>
+                    <noise>
+                        <type>gaussian</type>
+                        <mean>0.0</mean>
+                        <stddev>0.05</stddev>
+                    </noise>
                 </range>
             </ray>
             <plugin name="laser_controller" filename="libgazebo_ros_laser.so">
@@ -25,6 +30,7 @@
                 <output_type>sensor_msgs/LaserScan</output_type>
                 <frameName>lidar</frameName>
                 <topicName>scan</topicName>
+                <gaussianNoise>0.03</gaussianNoise>
             </plugin>
         </sensor>
     </gazebo>
