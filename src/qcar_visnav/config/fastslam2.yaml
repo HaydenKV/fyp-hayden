@@ -43,8 +43,8 @@ motion_noise:
 
 # --- DATA ASSOCIATION (RB) ---
 association:
-  chi2_gate: 9.21            # RB χ² (95%)
-  chi2_gate_world: 9.21      # world χ² (merge-before-birth)
+  chi2_gate: 7.38            # RB χ² (95%)
+  chi2_gate_world: 7.38      # world χ² (merge-before-birth)
   euclid_gate: 0.5           # reserved (not used now)
 
 # --- LANDMARK MANAGEMENT ---
@@ -66,7 +66,7 @@ birth:
 
 # --- POSE PROPOSAL ---
 proposal:
-  max_sigma_trace: 0.20
+  max_sigma_trace: 0.30
   sample_every_k: 0             # 0 = deterministic mean only
 
 # --- WEIGHT PENALTIES ---
