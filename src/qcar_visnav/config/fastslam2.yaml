@@ -1,83 +1,105 @@
 # ============================
-# FastSLAM 2.0 Configuration
+# Enhanced FastSLAM 2.0 Configuration  
 # QCar Autonomous Vehicle SLAM
 # ============================
 
 # --- COORDINATE FRAMES ---
 frames:
-  map_frame: "odom"            # run in odom frame
+  map_frame: "odom"
   odom_frame: "odom"
   base_frame: "base_footprint"
   lidar_frame: "lidar"
 
 # --- ODOMETRY SOURCE SELECTION ---
 odometry:
-  use_ekf: false               # false: /odom, true: /qcar/ekf/odom
+  use_ekf: false
   truth_topic: "/odom"
   ekf_topic: "/qcar/ekf/odom"
 
-# --- INITIAL POSE (spawn pose in simulation) ---
+# --- INITIAL POSE ---
 seed_from_params: true
 overwrite_with_odom_on_first_msg: false
 init:
-  x:   -4.3
-  y:    3.0
+  x: -4.3
+  y: 3.0
   yaw: -3.14
 initial_spread:
-  x:   0.05
-  y:   0.05
-  yaw: 0.03
+  x: 0.03
+  y: 0.03
+  yaw: 0.05
 
 # --- ODOMETRY BUFFER ---
 odom_buffer_window_sec: 2.0
 
 # --- PARTICLE FILTER ---
-particles: 60
-resample_neff_ratio: 0.5
+particles: 80                     # Increased for better performance
+resample_neff_ratio: 0.5         # Standard resampling threshold
 
-# --- MOTION MODEL ---
+# --- ENHANCED MOTION MODEL ---
 motion_noise:
-  sigma_x:   0.05
-  sigma_y:   0.05
-  sigma_yaw: 0.03
+  sigma_x: 0.03                   # Base position noise [m / sqrt(s)]
+  sigma_y: 0.03                   
+  sigma_yaw: 0.008                # Base yaw noise [rad / sqrt(s)]
+  
+  # Velocity-dependent scaling
+  velocity_noise_scale: 0.4       # Scale with velocity
+  min_velocity_for_scaling: 0.12  # Minimum velocity to apply scaling [m/s]
+  
+  # Turn-dependent scaling  
+  turning_noise_scale: 0.6        # Extra noise during turns
+  min_yawrate_for_turning: 0.08   # Minimum yaw rate for turning noise [rad/s]
+  
+  # Adaptive bounds
+  max_position_std: 0.08          # Maximum position uncertainty per step [m]
+  max_yaw_std: 0.12               # Maximum yaw uncertainty per step [rad]
 
-# --- DATA ASSOCIATION (RB) ---
+# --- ENHANCED DATA ASSOCIATION ---
 association:
-  chi2_gate: 7.38            # RB χ² (95%)
-  chi2_gate_world: 7.38      # world χ² (merge-before-birth)
-  euclid_gate: 0.5           # reserved (not used now)
+  method: "hungarian"             # "greedy", "hungarian", "jcbb"  
+  chi2_gate: 7.38                 # RB χ² (95% confidence, 2 DOF)
+  chi2_gate_world: 9.21           # World χ² for merge-before-birth (95% confidence, 2 DOF)
+  ambiguity_threshold: 0.7        # Threshold for detecting ambiguous associations
+  use_jcbb: false                 # Enable Joint Compatibility Branch and Bound
 
 # --- LANDMARK MANAGEMENT ---
-confirm_hits: 2
-min_new_lm_dist: 0.3         # retained for completeness
-merge_R_scale: 5.0           # retained for completeness
-landmark_prior_var: 0.08
+confirm_hits: 3
+min_new_lm_dist: 0.25
+landmark_prior_var: 0.15
+merge_R_scale: 4.0
 
 landmarks:
-  prune_unconfirmed_misses: 10   # reserved (not used now)
-  prune_stale_misses: 40         # reserved (not used now)
-  unconfirmed_R_scale: 2.5
+  unconfirmed_R_scale: 1.8
+  prune_unconfirmed_misses: 10
+  prune_stale_misses: 35
 
 # --- BIRTH BUFFER ---
 birth:
   required_hits: 3
   max_age: 10
-  promote_radius: 0.30
+  promote_radius: 0.25
 
 # --- POSE PROPOSAL ---
 proposal:
-  max_sigma_trace: 0.30
-  sample_every_k: 0             # 0 = deterministic mean only
+  max_sigma_trace: 0.25           # Maximum landmark uncertainty for proposal
+  sample_every_k: 0               # 0 = always use mean, >0 = sample every k frames
+  
+  # Information-based proposal
+  min_information_for_proposal: 2.0   # Minimum total information to use measurements
+  high_quality_threshold: 0.8         # Compatibility threshold for high-quality matches
 
 # --- WEIGHT PENALTIES ---
 weight:
-  new_landmark_penalty: 1.0
-  fov_miss_penalty: 0.4
+  new_landmark_penalty: 0.8       # Penalty for creating new landmarks
+  fov_miss_penalty: 0.3           # Penalty for landmarks in FoV but not observed
+  
+  # Quality bonuses
+  high_quality_bonus: 0.1         # Bonus for high-quality associations
+  information_bonus_scale: 0.05   # Scale factor for information content bonus
 
-# --- SENSOR FOV (for FoV-miss penalty only) ---
+# --- SENSOR FOV ---
 sensor:
-  fov_range_max: 20.0
-  fov_bearing_deg: 90.0
+  fov_range_max: 18.0
+  fov_bearing_deg: 85.0
 
 # --- LAP CONTROL ---
 lap:

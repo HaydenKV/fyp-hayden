@@ -18,20 +18,20 @@
 #include "particle.h"
 #include "motion_model.h"
 #include "measurement_model.h"
+#include "data_association.h"
 
 namespace qcar_visnav { namespace slam {
 
 /**
- * FastSLAM 2.0 for QCar
+ * Enhanced FastSLAM 2.0 for QCar
  *
  * - Particles over robot pose
- * - Per-particle EKF landmarks (world)
- * - RB measurement model
- * - Improved pose proposal (FS2.0)
- * - Per-particle exclusive meas↔LM assignment
+ * - Per-particle EKF landmarks (world frame)
+ * - Enhanced data association (Hungarian/JCBB)
+ * - Improved pose proposal with information weighting
+ * - Velocity-aware motion model
  * - World-space merge-before-birth
  * - Birth buffer with K-hit promotion
- * - Optional penalties to discourage duplicates/FoV misses
  */
 class FastSLAM2 {
 public:
@@ -55,41 +55,60 @@ private:
   std::string map_frame_, odom_frame_, base_frame_, lidar_frame_;
 
   // PF core
-  int    N_{120};
-  double neff_ratio_{0.4};
-  double chi2_gate_{9.21};         // RB Mahalanobis gate (per measurement)
-  double chi2_gate_world_{9.21};   // World-space χ² gate for merge-before-birth
+  int    N_{80};
+  double neff_ratio_{0.5};
 
-  // Data association (reserved hook)
-  double euclid_gate_{0.5};
+  // Enhanced data association
+  std::string association_method_{"hungarian"};  // "greedy", "hungarian", "jcbb"
+  double chi2_gate_{7.38};              // RB Mahalanobis gate
+  double chi2_gate_world_{9.21};        // World-space χ² gate for merge-before-birth
+  double ambiguity_threshold_{0.7};     // Threshold for ambiguous associations
+  bool   use_jcbb_{false};              // Enable JCBB for highest quality
+  std::unique_ptr<DataAssociation> data_assoc_;
+
+  // Enhanced motion model parameters
+  double velocity_noise_scale_{0.4};
+  double min_velocity_for_scaling_{0.12};
+  double turning_noise_scale_{0.6};
+  double min_yawrate_for_turning_{0.08};
+  double max_position_std_{0.08};
+  double max_yaw_std_{0.12};
 
   // Landmarks / births / penalties
-  int    confirm_hits_{2};
-  double min_new_lm_dist_{0.35};   // retained for completeness (not used directly now)
-  double merge_R_scale_{4.0};      // retained; merges now use χ² in world
-  double landmark_prior_var_{0.25};
+  int    confirm_hits_{3};
+  double min_new_lm_dist_{0.25};
+  double merge_R_scale_{4.0};
+  double landmark_prior_var_{0.15};
 
   int    birth_required_hits_{3};
   int    birth_max_age_{10};
-  double birth_promote_radius_{0.30};
+  double birth_promote_radius_{0.25};
 
-  double unconfirmed_R_scale_{2.0};
-  int    prune_unconfirmed_misses_{8}; // reserved
-  int    prune_stale_misses_{25};      // reserved
+  double unconfirmed_R_scale_{1.8};
+  int    prune_unconfirmed_misses_{10};
+  int    prune_stale_misses_{35};
 
-  double proposal_max_sigma_trace_{0.20};
+  // Enhanced pose proposal
+  double proposal_max_sigma_trace_{0.25};
   int    proposal_sample_every_k_{0};
+  double min_information_for_proposal_{2.0};
+  double high_quality_threshold_{0.8};
 
-  double new_landmark_penalty_{1.0};
-  double fov_miss_penalty_{0.4};
+  // Enhanced weight penalties
+  double new_landmark_penalty_{0.8};
+  double fov_miss_penalty_{0.3};
+  double high_quality_bonus_{0.1};
+  double information_bonus_scale_{0.05};
 
-  double fov_range_max_{20.0};
-  double fov_bearing_rad_{M_PI/2.0};
+  // Sensor FoV
+  double fov_range_max_{18.0};
+  double fov_bearing_rad_{M_PI * 85.0 / 180.0};
 
+  // Initialization
   bool   seed_from_params_{true};
   bool   overwrite_with_odom_on_first_msg_{true};
   double init_x_{0.0}, init_y_{0.0}, init_yaw_{0.0};
-  double spread_x_{0.02}, spread_y_{0.02}, spread_yaw_{0.01};
+  double spread_x_{0.03}, spread_y_{0.03}, spread_yaw_{0.05};
   std::string odom_topic_;
   double odom_buffer_window_sec_{2.0};
   bool   mapping_enabled_{true};
@@ -136,7 +155,7 @@ private:
   // TF helper for dynamic LiDAR extrinsics
   bool lookupLidarExtrinsics(const ros::Time& t, LidarExtrinsics& ex) const;
 
-  // --- Small helpers ---
+  // --- Enhanced helper functions ---
   bool inFoV(const Particle& p,
              const Eigen::Vector2d& mu_world,
              const LidarExtrinsics& ex) const;
@@ -145,22 +164,37 @@ private:
                     const Eigen::Matrix2d& Rw,
                     const Landmark& lm) const;
 
-  // Greedy 1-1 assignment: RB gating candidates and return matched pairs
-  struct MatchPair {
-    int k; // meas index
-    int j; // landmark index
-    double d2;
-    Eigen::Matrix2d S;
-    Eigen::Matrix2d Hlm;
-    Eigen::Matrix<double,2,3> Gx;
-    Eigen::Vector2d nu;
-    Eigen::Matrix2d R;
-  };
-  void buildGreedyMatches(const Particle& p,
-                          const std::vector<MeasRB>& meas_vec,
-                          const LidarExtrinsics& ex,
-                          std::vector<MatchPair>& out_matches,
-                          std::vector<int>& out_unmatched_meas) const;
+  // Enhanced pose proposal with information weighting
+  void computeEnhancedPoseProposal(Particle& p,
+                                   const GlobalAssignment& assignment,
+                                   const std::vector<MeasRB>& meas_vec,
+                                   const LidarExtrinsics& ex,
+                                   double dt,
+                                   double& log_proposal_correction);
+
+  // Process unmatched measurements with world-space merging
+  void processUnmatchedMeasurements(Particle& p,
+                                    const std::vector<int>& unmatched_indices,
+                                    const std::vector<MeasRB>& meas_vec,
+                                    const LidarExtrinsics& ex,
+                                    int& promotions_this_frame);
+
+  // Update matched landmarks using EKF
+  void updateMatchedLandmarks(Particle& p,
+                              const GlobalAssignment& assignment,
+                              const std::vector<MeasRB>& meas_vec,
+                              const LidarExtrinsics& ex,
+                              std::vector<bool>& lm_seen);
+
+  // Apply weight penalties and bonuses
+  void applyWeightAdjustments(Particle& p,
+                              const GlobalAssignment& assignment,
+                              const std::vector<bool>& lm_seen,
+                              const LidarExtrinsics& ex,
+                              int promotions_this_frame);
+
+  // Age and promote birth tracks
+  void manageBirthTracks(Particle& p, int& promotions_this_frame);
 };
 
 }} // namespace
