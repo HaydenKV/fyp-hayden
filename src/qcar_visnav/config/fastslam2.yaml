@@ -55,7 +55,7 @@ motion_noise:
 
 # --- ENHANCED DATA ASSOCIATION ---
 association:
-  method: "hungarian"             # "greedy", "hungarian", "jcbb"  
+  method: "jcbb"             # "greedy", "hungarian", "jcbb"  
   chi2_gate: 7.38                 # RB χ² (95% confidence, 2 DOF)
   chi2_gate_world: 9.21           # World χ² for merge-before-birth (95% confidence, 2 DOF)
   ambiguity_threshold: 0.7        # Threshold for detecting ambiguous associations
