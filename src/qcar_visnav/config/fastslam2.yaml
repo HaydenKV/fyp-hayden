@@ -1,22 +1,19 @@
 # ============================
-# Hybrid FastSLAM 2.0 Configuration
-# QCar Autonomous Vehicle SLAM
+# Lean FastSLAM 2.0 Configuration
 # ============================
 
-# --- COORDINATE FRAMES ---
 frames:
-  map_frame: "odom"
-  odom_frame: "odom"
-  base_frame: "base_footprint"
+  map_frame:   "odom"
+  odom_frame:  "odom"
+  base_frame:  "base_footprint"
   lidar_frame: "lidar"
 
-# --- ODOMETRY SOURCE SELECTION ---
 odometry:
   use_ekf: false
   truth_topic: "/odom"
   ekf_topic: "/qcar/ekf/odom"
 
-# --- INITIAL POSE ---
+# Initialize particles from params (or snap to first odom if enabled below)
 seed_from_params: true
 overwrite_with_odom_on_first_msg: false
 init:
@@ -27,94 +24,31 @@ initial_spread:
   x: 0.03
   y: 0.03
   yaw: 0.05
-
-# --- ODOMETRY BUFFER ---
 odom_buffer_window_sec: 2.0
 
-# --- PARTICLE FILTER ---
+# Particle filter
 particles: 80
 resample_neff_ratio: 0.5
 
-# --- MOTION MODEL ---
+# Constant white process noise (world frame)
 motion_noise:
-  sigma_x: 0.04
-  sigma_y: 0.04
+  sigma_x:   0.04
+  sigma_y:   0.04
   sigma_yaw: 0.01
 
-  velocity_noise_scale: 0.4
-  min_velocity_for_scaling: 0.12
-
-  turning_noise_scale: 0.6
-  min_yawrate_for_turning: 0.08
-
-  max_position_std: 0.08
-  max_yaw_std: 0.12
-
-# --- DATA ASSOCIATION (RB) ---
+# Front-end (choose one)
 association:
-  method: "jcbb"       # "greedy", "hungarian", "jcbb"
-  chi2_gate: 3.38           # RB χ² gate (2 DoF)
-  chi2_gate_world: 3.21     # WORLD χ² gate (2 DoF)
-  ambiguity_threshold: 0.7
-  use_jcbb: true
+  mode: "id"          # "id" | "nn_rb"
+  chi2_gate_rb: 5.99  # used only when mode == "nn_rb"
 
-# --- LANDMARK MANAGEMENT ---
-confirm_hits: 3
-min_new_lm_dist: 0.25
-landmark_prior_var: 0.15
-merge_R_scale: 4.0
-
+# Landmark behavior
 landmarks:
-  unconfirmed_R_scale: 1.3
-  prune_unconfirmed_misses: 10
-  prune_stale_misses: 35
+  init_var: 0.15          # prior added to J Rz J^T
+  confirm_hits: 2         # LM becomes 'confirmed' after this many matched hits
+  lock_hits: 6            # OR lock when hits reach this count
+  lock_cov_trace: 0.02    # OR lock when trace(Sigma) <= this
 
-# --- BIRTH BUFFER ---
-birth:
-  required_hits: 3
-  max_age: 10
-  promote_radius: 0.25
-
-# --- POSE PROPOSAL (RB) ---
-proposal:
-  max_sigma_trace: 0.25
-  sample_every_k: 0
-  min_information_for_proposal: 0.8
-  high_quality_threshold: 0.8
-
-# --- WEIGHT ADJUSTMENTS ---
-weight:
-  new_landmark_penalty: 0.8
-  high_quality_bonus: 0.1
-  information_bonus_scale: 0.05
-
-# --- HYBRID TOGGLES ---
-landmark_update_model: "world"    # "world", "rb", or "mixed"
-world_update_R_inflate: 1.0       # Inflate Rw to cover TF/odom uncertainty
-world_update_skip_on_bad_tf: true # If TF for base pose fails, skip world update this frame
-
-# --- LAP CONTROL ---
-lap:
-  freeze_after_first_loop: false
-
-
-# fastslam2_viz_node parameters
-
-# What to show
-show_confirmed_only: true         # set true after debugging
-include_births_if_empty: true      # show births until some LMs are confirmed
-
-# Timing / TF handling
-use_latest_tf: true                # stamp markers at time 0 to use latest TF
-stamp_offset: 0.0                  # (only used when use_latest_tf=false)
-
-# Layering so SLAM cones sit between raw and tracked layers
-z_offset: 0.05
-
-# Topics (override only if you changed defaults in code)
-# particles_topic:                "/slam/particles_pose"
-# landmarks_pose_topic:           "/slam/landmarks_pose"
-# landmarks_pose_confirmed_topic: "/slam/landmarks_pose_confirmed"
-# births_pose_topic:              "/slam/births_pose"
-markers_topic: "/slam/map_markers"
+# Viz node (optional)
+show_confirmed_only: true
 map_frame: "odom"
+markers_topic: "/slam/map_markers"
