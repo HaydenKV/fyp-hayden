@@ -1,19 +1,17 @@
 <launch>
-  <!-- ===================================================== -->
   <!-- Use simulation clock -->
   <param name="use_sim_time" value="true"/>
-  <!-- ===================================================== -->
 
-  <!-- === Bring up the sim + EKF (as you already do) === -->
+  <!-- Sim + EKF as before -->
   <include file="$(find qcar_visnav)/launch/Track1ExampleEKF.launch"/>
 
-  <!-- === Load perception + tracker params (global, as before) === -->
+  <!-- Perception params -->
   <rosparam file="$(find qcar_visnav)/config/perception.yaml" command="load"/>
 
-  <!-- === Detector === -->
+  <!-- Detector -->
   <node pkg="qcar_visnav" type="cone_detector_node" name="cone_detector" output="screen"/>
 
-  <!-- === Tracker === -->
+  <!-- Tracker -->
   <node pkg="qcar_visnav" type="cone_tracker_node" name="cone_tracker" output="screen"/>
 
   <!-- === Visualize raw cones === -->
@@ -22,12 +20,15 @@
   <!-- === Visualize tracked cones === -->
   <node pkg="qcar_visnav" type="cones_viz_node" name="cone_markers_tracked" output="screen"/>
 
-  <!-- ===================================================== -->
-  <!-- ==============  FastSLAM 2.0 Node =================== -->
-  <!-- ===================================================== -->
-
-  <!-- Load FastSLAM params into the node's private namespace (~) -->
+  <!-- FastSLAM 2.0 core -->
   <node pkg="qcar_visnav" type="slam_node" name="fastslam2" output="screen">
+    <!-- node-private params -->
+    <rosparam command="load" file="$(find qcar_visnav)/config/fastslam2.yaml"/>
+  </node>
+
+  <!-- FastSLAM viz (blue cones etc.) -->
+  <node pkg="qcar_visnav" type="fastslam2_viz_node" name="fastslam2_viz" output="screen">
+    <!-- node-private params -->
     <rosparam command="load" file="$(find qcar_visnav)/config/fastslam2.yaml"/>
   </node>
 

@@ -56,7 +56,7 @@ cone_tracker:
   debug: 1
 
 cone_markers_raw:
-  cones_topic:   "/cones"
+  cones_topic:   "/cones" #cones (LiDAR/polar, per-cone covariance).
   markers_topic: "/cones_markers_raw"
   sphere_diam:   0.24
   text_scale:    0.18
@@ -69,7 +69,7 @@ cone_markers_raw:
   z_offset:      0.0       # stays at ground plane
 
 cone_markers_tracked:
-  cones_topic:   "/tracked_cones"
+  cones_topic:   "/tracked_cones" # take input RB, convert to XY for predictions and convert back to RB for output.
   markers_topic: "/cones_markers_tracked"
   sphere_diam:   0.18
   text_scale:    0.18

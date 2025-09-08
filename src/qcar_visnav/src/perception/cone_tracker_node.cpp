@@ -43,10 +43,8 @@
 
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/LinearMath/Matrix3x3.h>
-#include <geometry_msgs/PointStamped.h>
 #include <geometry_msgs/TransformStamped.h>
 
 #include <Eigen/Dense>
@@ -68,7 +66,7 @@ struct Params {
   std::string base_frame{"base_footprint"};       // kept for compatibility (not used for publishing)
   double chi2_gate{5.99};     // 95% @ 2DOF
   int    init_hits{2};        // promote to confirmed after this many consecutive hits
-  int    max_misses{5};       // drop track after this many consecutive misses
+  int    max_misses{5};       // drop after this many consecutive misses
   double init_cov{0.25};      // initial covariance (m^2)
   double q_xy{0.01};          // process noise spectral density (m^2/s) for static-landmark jitter
   double r_scale{1.0};        // scales detector measurement covariance
@@ -97,7 +95,7 @@ struct Track { // Persistent tracks (survive across frames)
 static ros::Subscriber sub_dets; // subscribes to raw detections
 static ros::Publisher  pub_tracks; // publishes confirmed tracks
 static std::vector<Track> g_tracks; // THE PERSISTENT MEMORY
-static uint32_t g_next_id = 1;  
+static uint32_t g_next_id = 1;
 
 static std::unique_ptr<tf2_ros::Buffer> tf_buffer;
 static std::unique_ptr<tf2_ros::TransformListener> tf_listener;
@@ -111,8 +109,8 @@ static inline Eigen::Matrix2d Rot2(double yaw) {
 }
 
 static double yawFromTF(const geometry_msgs::TransformStamped &tf) {
-  tf2::Quaternion q;
-  tf2::fromMsg(tf.transform.rotation, q);
+  const auto &q_msg = tf.transform.rotation;
+  tf2::Quaternion q(q_msg.x, q_msg.y, q_msg.z, q_msg.w);
   double roll, pitch, yaw;
   tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
   return yaw;
@@ -133,12 +131,6 @@ static Eigen::Matrix2d polarCovToCart(double r, double th, double r_var, double 
   return J * Rp * J.transpose();
 }
 
-// Rotate covariance: S2 = R S R^T
-static inline Eigen::Matrix2d rotateCov(const Eigen::Matrix2d &S, double yaw) {
-  Eigen::Matrix2d R = Rot2(yaw);
-  return R * S * R.transpose();
-}
-
 // Cartesian (x,y) covariance -> polar (r,th) at point p
 static Eigen::Matrix2d cartCovToPolar(const Eigen::Vector2d &p, const Eigen::Matrix2d &Sxy) {
   const double x = p.x(), y = p.y();
@@ -148,35 +140,6 @@ static Eigen::Matrix2d cartCovToPolar(const Eigen::Vector2d &p, const Eigen::Mat
   H <<  x/r,  y/r,
        -y/r2, x/r2;
   return H * Sxy * H.transpose();
-}
-
-// Transform a 2D point (x,y,0) from src->dst at given stamp; also return yaw(src->dst)
-static bool transformXY(const Eigen::Vector2d &p_src,
-                        const std::string &src_frame,
-                        const std::string &dst_frame,
-                        const ros::Time &stamp,
-                        Eigen::Vector2d &p_dst,
-                        double &yaw_src_to_dst)
-{
-  geometry_msgs::PointStamped ps_in, ps_out;
-  ps_in.header.stamp = stamp;
-  ps_in.header.frame_id = src_frame;
-  ps_in.point.x = p_src.x();
-  ps_in.point.y = p_src.y();
-  ps_in.point.z = 0.0;
-
-  geometry_msgs::TransformStamped tf;
-  try {
-    tf = tf_buffer->lookupTransform(dst_frame, src_frame, stamp, ros::Duration(0.05));
-    tf_buffer->transform(ps_in, ps_out, dst_frame, ros::Duration(0.05));
-  } catch (const tf2::TransformException &ex) {
-    ROS_WARN_THROTTLE(1.0, "[cone_tracker] TF %s->%s at t=%.3f failed: %s",
-                      src_frame.c_str(), dst_frame.c_str(), stamp.toSec(), ex.what());
-    return false;
-  }
-  p_dst = { ps_out.point.x, ps_out.point.y };
-  yaw_src_to_dst = yawFromTF(tf);
-  return true;
 }
 
 // ----------------------------
@@ -265,7 +228,7 @@ void conesCb(const qcar_visnav::ConeArray::ConstPtr &msg)
   struct Det {
     Eigen::Vector2d z_odom;
     Eigen::Matrix2d R_odom;
-    int color; double color_conf; int32_t det_id;
+    int color; double color_conf;
   };
   std::vector<Det> dets; dets.reserve(msg->cones.size());
 
@@ -285,7 +248,7 @@ void conesCb(const qcar_visnav::ConeArray::ConstPtr &msg)
     Eigen::Matrix2d S_lidar = polarCovToCart(r, th, r_var, th_var);
     Eigen::Matrix2d S_odom  = R_lo * S_lidar * R_lo.transpose();
 
-    dets.push_back({ p_odom, S_odom, c.color, c.color_conf, c.id });
+    dets.push_back({ p_odom, S_odom, c.color, c.color_conf });
   }
 
   const int Nd = static_cast<int>(dets.size());
@@ -342,14 +305,19 @@ void conesCb(const qcar_visnav::ConeArray::ConstPtr &msg)
     }
   }
 
-  // Update matched tracks (EKF with H=I)
+  // Update matched tracks (EKF with H=I)  — SAFER NUMERICS (LLT solve)
   for (const auto &pr : pairs) {
     const int i = pr.first, j = pr.second;
     Track &t = g_tracks[j];
     const auto &d = dets[i];
 
     Eigen::Matrix2d S = t.P + d.R_odom;
-    Eigen::Matrix2d K = t.P * S.inverse();
+    Eigen::LLT<Eigen::Matrix2d> llt(S);
+    if (llt.info() != Eigen::Success) continue;
+
+    // K = P * S^{-1}  via solve (no explicit inverse)
+    Eigen::Matrix2d K = t.P * llt.solve(Eigen::Matrix2d::Identity());
+
     t.x += K * (d.z_odom - t.x);
     t.P  = (Eigen::Matrix2d::Identity() - K) * t.P;
 
@@ -357,6 +325,7 @@ void conesCb(const qcar_visnav::ConeArray::ConstPtr &msg)
     t.hits   = std::min(t.hits + 1, 1000000);
     t.last_stamp = stamp;
 
+    // Keep color logic (for later fusion/visualization)
     if (d.color_conf > 0.0) {
       t.color_conf = 0.7*t.color_conf + 0.3*d.color_conf;
       if (t.color_conf >= 0.5) t.color = d.color;
@@ -405,7 +374,7 @@ void conesCb(const qcar_visnav::ConeArray::ConstPtr &msg)
   //   P_lidar = R_lo^T *  P_odom * R_lo
   //
   // Then convert to (range,bearing) + polar covariance.
-// ------------------------------------------------------------------------
+  // ------------------------------------------------------------------------
   qcar_visnav::ConeArray out;
   out.header.stamp = stamp;
   out.header.frame_id = lidar_frame;

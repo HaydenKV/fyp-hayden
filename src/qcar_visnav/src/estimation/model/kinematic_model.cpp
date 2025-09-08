@@ -21,7 +21,14 @@ KinematicModel::StateVec KinematicModel::predict(const StateVec& x_in, double t,
   
   // Simple Euler integration (can upgrade to RK4 if needed)
   StateVec x_dot = stateDot(x_in, u);
-  return x_in + dt * x_dot;
+  StateVec x_pred = x_in + dt * x_dot;
+
+  // // CHANGE 1: Comment out const double and x_pred(2) to get back to old sol
+  // Algebraic yaw-rate (overwrite, not integrate)
+  const double r_alg = (x_pred(0) / params_.L) * std::tan(input_.delta);
+  x_pred(2) = r_alg;
+
+  return x_pred;
 }
 
 KinematicModel::StateVec KinematicModel::stateDot(const StateVec& x, const InputVec& u) const {
@@ -46,7 +53,8 @@ KinematicModel::StateVec KinematicModel::stateDot(const StateVec& x, const Input
   x_dot(1) = (a_meas_y - bay) - r * vx;  // vy_dot
   
   // Yaw rate from bicycle model
-  x_dot(2) = (vx / params_.L) * std::tan(delta);  // r_dot
+  // // CHANGE 2: x_dot(2) = (vx / params_.L) * std::tan(delta);  // r_dot
+  x_dot(2) = 0.0;
   
   // Bias random walks (0 drift; noise added via Q)
   x_dot(3) = 0.0;  // bg_dot (driven by process noise)
@@ -85,7 +93,7 @@ KinematicModel::StateMat KinematicModel::getProcessJacobian(const StateVec& x, d
   F(1, 5) += -dt;           // d(vy_dot)/dbay = -1
   
   // Row 2: d(r_dot)/d[vx, vy, r, bg, bax, bay]
-  F(2, 0) += dt * std::tan(delta) / params_.L;  // d(r_dot)/dvx = tan(delta)/L
+  F(2, 0) += 0.0; // CHANGE 3: dt * std::tan(delta) / params_.L;  // d(r_dot)/dvx = tan(delta)/L
   F(2, 1) += 0.0;           // d(r_dot)/dvy = 0
   F(2, 2) += 0.0;           // d(r_dot)/dr = 0
   F(2, 3) += 0.0;           // d(r_dot)/dbg = 0

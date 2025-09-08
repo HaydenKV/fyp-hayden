@@ -5,7 +5,6 @@
 #include <random>
 #include <Eigen/Dense>
 
-// TF & msgs
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
@@ -15,17 +14,8 @@
 
 using namespace qcar_visnav::slam;
 
-// ============================================================================
-// Helpers for pose proposal prior, likelihoods, and sampling
-// ============================================================================
-
+// ========== proposal helpers ==========
 namespace {
-// Q for pose prior over dt using enhanced motion noise
-inline Eigen::Matrix3d Qx_from_enhanced_noise_dt(const MotionModel& motion_model, 
-                                                  double vx_b, double vy_b, double r_b, double dt) {
-  return motion_model.getMotionCovariance(vx_b, vy_b, r_b, dt);
-}
-
 inline double logGaussian(const Eigen::VectorXd& x,
                           const Eigen::VectorXd& mu,
                           const Eigen::MatrixXd& Sigma)
@@ -50,33 +40,28 @@ inline Eigen::VectorXd sampleGaussian(const Eigen::VectorXd& mu,
 {
   const int d = static_cast<int>(mu.size());
   Eigen::LLT<Eigen::MatrixXd> llt(Sigma);
-  if (llt.info() != Eigen::Success) {
-    return mu;
-  }
+  if (llt.info() != Eigen::Success) return mu;
   const Eigen::MatrixXd L = llt.matrixL();
   std::normal_distribution<double> N01(0.0, 1.0);
   Eigen::VectorXd z(d);
   for (int i = 0; i < d; ++i) z(i) = N01(rng);
   return mu + L * z;
 }
-} // anon namespace
+} // anon
 
-// ============================================================================
-// Constructor / Configuration
-// ============================================================================
-
+// ========== ctor ==========
 FastSLAM2::FastSLAM2(ros::NodeHandle& nh, ros::NodeHandle& pnh)
   : tfl_(tfbuf_), motion_(MotionNoise())
 {
-  ROS_INFO("[FastSLAM2] Initializing Enhanced FastSLAM 2.0...");
+  ROS_INFO("[FastSLAM2] Initializing (core, no viz)...");
 
-  // ---- Frames ----
+  // Frames
   pnh.param("frames/map_frame",  map_frame_,  std::string("odom"));
   pnh.param("frames/odom_frame", odom_frame_, std::string("odom"));
   pnh.param("frames/base_frame", base_frame_, std::string("base_footprint"));
   pnh.param("frames/lidar_frame", lidar_frame_, std::string("lidar"));
 
-  // ---- Odometry source ----
+  // Odom
   bool use_ekf_odom = false;
   std::string truth_topic = "/odom";
   std::string ekf_topic   = "/qcar/ekf/odom";
@@ -84,27 +69,21 @@ FastSLAM2::FastSLAM2(ros::NodeHandle& nh, ros::NodeHandle& pnh)
   pnh.param("odometry/truth_topic", truth_topic, truth_topic);
   pnh.param("odometry/ekf_topic",   ekf_topic,   ekf_topic);
   odom_topic_ = use_ekf_odom ? ekf_topic : truth_topic;
-  ROS_INFO("[FastSLAM2] Using odometry from: %s", odom_topic_.c_str());
 
-  // ---- Core PF params ----
+  // PF
   pnh.param("particles", N_, 80);
   pnh.param("resample_neff_ratio", neff_ratio_, 0.5);
 
-  // ---- Enhanced data association ----
-  pnh.param("association/method", association_method_, std::string("hungarian"));
+  // Association
+  pnh.param("association/method", association_method_, std::string("greedy"));
   pnh.param("association/chi2_gate", chi2_gate_, 7.38);
   pnh.param("association/chi2_gate_world", chi2_gate_world_, 9.21);
   pnh.param("association/ambiguity_threshold", ambiguity_threshold_, 0.7);
   pnh.param("association/use_jcbb", use_jcbb_, false);
-
-  // Initialize data association
-  bool use_hungarian = (association_method_ == "hungarian" || association_method_ == "jcbb");
   if (association_method_ == "jcbb") use_jcbb_ = true;
-  
-  data_assoc_.reset(new DataAssociation(chi2_gate_, ambiguity_threshold_, use_hungarian));
-  ROS_INFO("[FastSLAM2] Data association method: %s", association_method_.c_str());
+  data_assoc_.reset(new DataAssociation(chi2_gate_, ambiguity_threshold_, /*use_hungarian=*/false));
 
-  // ---- Landmark management ----
+  // Landmark mgmt
   pnh.param("confirm_hits",    confirm_hits_,    3);
   pnh.param("min_new_lm_dist", min_new_lm_dist_, 0.25);
   pnh.param("merge_R_scale",   merge_R_scale_,   4.0);
@@ -113,7 +92,7 @@ FastSLAM2::FastSLAM2(ros::NodeHandle& nh, ros::NodeHandle& pnh)
   pnh.param("landmarks/prune_unconfirmed_misses", prune_unconfirmed_misses_, 10);
   pnh.param("landmarks/prune_stale_misses",       prune_stale_misses_,       35);
 
-  // ---- Enhanced motion model ----
+  // Motion model params
   MotionNoise enhanced_noise;
   pnh.param("motion_noise/sigma_x",   enhanced_noise.sigma_x,   0.03);
   pnh.param("motion_noise/sigma_y",   enhanced_noise.sigma_y,   0.03);
@@ -124,34 +103,30 @@ FastSLAM2::FastSLAM2(ros::NodeHandle& nh, ros::NodeHandle& pnh)
   pnh.param("motion_noise/min_yawrate_for_turning", enhanced_noise.min_yawrate_for_turning, 0.08);
   pnh.param("motion_noise/max_position_std", enhanced_noise.max_position_std, 0.08);
   pnh.param("motion_noise/max_yaw_std", enhanced_noise.max_yaw_std, 0.12);
-
   motion_ = MotionModel(enhanced_noise);
   motion_noise_ = enhanced_noise;
 
-  // ---- Birth buffer ----
+  // Births
   pnh.param("birth/required_hits", birth_required_hits_, 3);
   pnh.param("birth/max_age",       birth_max_age_,       10);
   pnh.param("birth/promote_radius",birth_promote_radius_, 0.25);
 
-  // ---- Enhanced pose proposal ----
+  // Proposal & bonuses
   pnh.param("proposal/max_sigma_trace", proposal_max_sigma_trace_, 0.25);
   pnh.param("proposal/sample_every_k",  proposal_sample_every_k_,  0);
   pnh.param("proposal/min_information_for_proposal", min_information_for_proposal_, 2.0);
   pnh.param("proposal/high_quality_threshold", high_quality_threshold_, 0.8);
-
-  // ---- Enhanced weight penalties ----
   pnh.param("weight/new_landmark_penalty", new_landmark_penalty_, 0.8);
-  pnh.param("weight/fov_miss_penalty",     fov_miss_penalty_,     0.3);
   pnh.param("weight/high_quality_bonus",   high_quality_bonus_,   0.1);
   pnh.param("weight/information_bonus_scale", information_bonus_scale_, 0.05);
 
-  // ---- Sensor FoV ----
+  // Sensor
   pnh.param("sensor/fov_range_max",        fov_range_max_,        18.0);
   double fov_bearing_deg = 85.0;
   pnh.param("sensor/fov_bearing_deg",      fov_bearing_deg,       85.0);
   fov_bearing_rad_ = fov_bearing_deg * M_PI / 180.0;
 
-  // ---- Initialization ----
+  // Init
   pnh.param("seed_from_params", seed_from_params_, true);
   pnh.param("overwrite_with_odom_on_first_msg", overwrite_with_odom_on_first_msg_, true);
   pnh.param("init/x",   init_x_,   0.0);
@@ -160,11 +135,10 @@ FastSLAM2::FastSLAM2(ros::NodeHandle& nh, ros::NodeHandle& pnh)
   pnh.param("initial_spread/x",   spread_x_,   0.03);
   pnh.param("initial_spread/y",   spread_y_,   0.03);
   pnh.param("initial_spread/yaw", spread_yaw_, 0.05);
-
   pnh.param("odom_buffer_window_sec", odom_buffer_window_sec_, 2.0);
   pnh.param("lap/freeze_after_first_loop", freeze_after_first_loop_, false);
 
-  // ---- Particles ----
+  // Particles
   P_.resize(N_);
   const double w0 = 1.0 / std::max(1, N_);
   for (int i = 0; i < N_; ++i) {
@@ -175,70 +149,46 @@ FastSLAM2::FastSLAM2(ros::NodeHandle& nh, ros::NodeHandle& pnh)
     P_[i].map.clear();
     P_[i].births.clear();
   }
-
   if (seed_from_params_) {
-    ROS_INFO("[FastSLAM2] Seeding from params: init(%.3f, %.3f, %.3f deg), spread(%.3f, %.3f, %.3f deg)",
-             init_x_, init_y_, init_yaw_*180/M_PI, spread_x_, spread_y_, spread_yaw_);
     initializeParticlesFrom(init_x_, init_y_, init_yaw_, spread_x_, spread_y_, spread_yaw_);
-  } else {
-    ROS_INFO("[FastSLAM2] Will initialize from first odometry message.");
   }
 
-  // ---- ROS pubs/subs ----
-  pub_particles_            = nh.advertise<visualization_msgs::MarkerArray>("slam/particles", 1);
-  pub_particles_posearray_  = nh.advertise<geometry_msgs::PoseArray>("slam/particles_pose", 1);
-  pub_map_markers_          = nh.advertise<visualization_msgs::MarkerArray>("slam/map_markers", 1);
-  pub_slam_odom_            = nh.advertise<nav_msgs::Odometry>("slam/odom", 1);
-  pub_slam_odom_mean_       = nh.advertise<nav_msgs::Odometry>("slam/odom_mean", 1);
+  // Pubs/subs
+  pub_particles_posearray_            = nh.advertise<geometry_msgs::PoseArray>("/slam/particles_pose", 1);
+  pub_landmarks_posearray_            = nh.advertise<geometry_msgs::PoseArray>("/slam/landmarks_pose", 1);
+  pub_landmarks_posearray_confirmed_  = nh.advertise<geometry_msgs::PoseArray>("/slam/landmarks_pose_confirmed", 1);
+  pub_births_posearray_               = nh.advertise<geometry_msgs::PoseArray>("/slam/births_pose", 1);
+  pub_slam_odom_                      = nh.advertise<nav_msgs::Odometry>("/slam/odom", 1);
+  pub_slam_odom_mean_                 = nh.advertise<nav_msgs::Odometry>("/slam/odom_mean", 1);
 
   sub_odom_  = nh.subscribe<nav_msgs::Odometry>(odom_topic_, 50, &FastSLAM2::cbOdom, this);
   sub_cones_ = nh.subscribe<qcar_visnav::ConeArray>("/tracked_cones", 10, &FastSLAM2::cbCones, this);
 
-  ROS_INFO("[FastSLAM2] Enhanced configuration loaded successfully.");
+  ROS_INFO("[FastSLAM2] Core initialized. Publishing PoseArrays (particles, landmarks, births).");
 }
 
-// ============================================================================
-// Particle initialization
-// ============================================================================
-
+// ========== init ==========
 void FastSLAM2::initializeParticlesFrom(double x, double y, double yaw,
                                         double sx, double sy, double syaw)
 {
-  ROS_INFO("[FastSLAM2] Initializing %d particles around (%.3f, %.3f, %.1f deg)",
-           N_, x, y, yaw*180/M_PI);
-
   std::mt19937 rng{std::random_device{}()};
   std::normal_distribution<double> nx(0.0, sx);
   std::normal_distribution<double> ny(0.0, sy);
   std::normal_distribution<double> nyw(0.0, syaw);
-
   for (auto& part : P_) {
     part.x = x + nx(rng);
     part.y = y + ny(rng);
     part.yaw = yaw + nyw(rng);
   }
-
   particles_initialized_ = true;
   last_prop_stamp_ = ros::Time(0);
-
   best_idx_ = 0;
   mean_x_ = x; mean_y_ = y; mean_yaw_ = yaw;
-
-  ROS_INFO("[FastSLAM2] Particles initialized.");
 }
 
-// ============================================================================
-// Event loop placeholder
-// ============================================================================
+void FastSLAM2::spinOnce() {}
 
-void FastSLAM2::spinOnce() {
-  // no-op
-}
-
-// ============================================================================
-// Odom callback
-// ============================================================================
-
+// ========== odom ==========
 void FastSLAM2::cbOdom(const nav_msgs::Odometry::ConstPtr& msg) {
   if (!snapped_to_first_odom_ && overwrite_with_odom_on_first_msg_) {
     const auto& p = msg->pose.pose.position;
@@ -246,10 +196,7 @@ void FastSLAM2::cbOdom(const nav_msgs::Odometry::ConstPtr& msg) {
     double roll, pitch, yaw; tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
     initializeParticlesFrom(p.x, p.y, yaw, spread_x_, spread_y_, spread_yaw_);
     snapped_to_first_odom_ = true;
-    ROS_INFO("[FastSLAM2] Snapped to first /odom: (%.3f, %.3f, %.1f deg)",
-             p.x, p.y, yaw*180/M_PI);
   }
-
   if (!particles_initialized_ && !seed_from_params_) {
     const auto& p = msg->pose.pose.position;
     tf2::Quaternion q; tf2::fromMsg(msg->pose.pose.orientation, q);
@@ -257,24 +204,17 @@ void FastSLAM2::cbOdom(const nav_msgs::Odometry::ConstPtr& msg) {
     initializeParticlesFrom(p.x, p.y, yaw, spread_x_, spread_y_, spread_yaw_);
   }
 
-  // Body-frame twist sample
   OdomStamped o;
   o.t  = msg->header.stamp;
   o.vx = msg->twist.twist.linear.x;
   o.vy = msg->twist.twist.linear.y;
   o.r  = msg->twist.twist.angular.z;
   odom_buf_.push_back(o);
-
-  // Ring buffer
   while (!odom_buf_.empty() &&
          (o.t - odom_buf_.front().t).toSec() > odom_buffer_window_sec_) {
     odom_buf_.pop_front();
   }
 }
-
-// ============================================================================
-// Twist interpolation and propagation
-// ============================================================================
 
 FastSLAM2::OdomStamped
 FastSLAM2::interpTwist(const OdomStamped& a,
@@ -287,27 +227,23 @@ FastSLAM2::interpTwist(const OdomStamped& a,
   OdomStamped result;
   result.t  = s;
   result.vx = (1.0 - frac)*a.vx + frac*b.vx;
-  result.vy = (1.0 - frac)*a.vy + frac*b.vy;
+  result.vy = (1.0 - frac)*a.vy;
   result.r  = (1.0 - frac)*a.r  + frac*b.r;
   return result;
 }
 
 void FastSLAM2::propagateParticlesTo(const ros::Time& t) {
   if (!particles_initialized_ || odom_buf_.size() < 2) return;
-
   if (last_prop_stamp_.isZero()) last_prop_stamp_ = odom_buf_.front().t;
   if (t <= last_prop_stamp_) return;
 
   for (size_t i = 0; i + 1 < odom_buf_.size(); ++i) {
     const auto& a = odom_buf_[i];
     const auto& b = odom_buf_[i+1];
-
-    // Overlap of [a.t, b.t] with [last_prop_stamp_, t]
     const ros::Time seg_start = std::max(a.t, last_prop_stamp_);
     const ros::Time seg_end   = std::min(b.t, t);
     if (seg_end <= seg_start) continue;
 
-    // Interpolate and integrate (trapezoidal)
     const auto ta = interpTwist(a, b, seg_start);
     const auto tb = interpTwist(a, b, seg_end);
 
@@ -320,14 +256,10 @@ void FastSLAM2::propagateParticlesTo(const ros::Time& t) {
       motion_.propagate(p, vx_avg, vy_avg, r_avg, dt);
     }
   }
-
   last_prop_stamp_ = t;
 }
 
-// ============================================================================
-// Cone observations callback
-// ============================================================================
-
+// ========== cones ==========
 bool FastSLAM2::lookupLidarExtrinsics(const ros::Time& t, LidarExtrinsics& ex) const {
   try {
     const auto T = tfbuf_.lookupTransform(base_frame_, lidar_frame_, t, ros::Duration(0.05));
@@ -348,18 +280,14 @@ bool FastSLAM2::lookupLidarExtrinsics(const ros::Time& t, LidarExtrinsics& ex) c
 
 void FastSLAM2::cbCones(const qcar_visnav::ConeArray::ConstPtr& msg) {
   if (!particles_initialized_) {
-    ROS_WARN_THROTTLE(2.0, "[FastSLAM2] Cones received before particles initialized; ignoring");
+    ROS_WARN_THROTTLE(2.0, "[FastSLAM2] Cones before particles init; ignoring");
     return;
   }
-
-  // 1) Propagate to observation time
   propagateParticlesTo(msg->header.stamp);
 
-  // 2) LiDAR extrinsics at this time
   LidarExtrinsics ex;
   if (!lookupLidarExtrinsics(msg->header.stamp, ex) || !ex.valid) return;
 
-  // 3) Build RB measurements from tracked cones (LiDAR frame)
   std::vector<MeasRB> meas; meas.reserve(msg->cones.size());
   for (const auto& c : msg->cones) {
     if (!std::isfinite(c.range) || !std::isfinite(c.bearing)) continue;
@@ -370,80 +298,58 @@ void FastSLAM2::cbCones(const qcar_visnav::ConeArray::ConstPtr& msg) {
     m.b_var = std::max(1e-12, c.bearing_var);
     meas.push_back(m);
   }
-  if (meas.empty()) {
-    ROS_DEBUG("[FastSLAM2] No valid cone observations after RB filtering");
-    return;
-  }
+  if (meas.empty()) return;
 
-  // 4) Core SLAM update
   processMeasurementAt(msg->header.stamp, meas, ex);
-
-  // 5) Visualization/output
-  publishViz(msg->header.stamp);
+  publishCoreOutputs(msg->header.stamp);
 }
 
-// ============================================================================
-// Core measurement update (Enhanced FastSLAM 2.0)
-// ============================================================================
+// ========== core update ==========
+double FastSLAM2::worldMaha2(const Eigen::Vector2d& z_world,
+                             const Eigen::Matrix2d& Rw,
+                             const Landmark& lm) const
+{
+  const Eigen::Matrix2d Sw   = lm.Sigma + Rw;
+  const Eigen::Matrix2d Sinv = Sw.inverse();
+  const Eigen::Vector2d d    = z_world - lm.mu;
+  return (d.transpose() * Sinv * d)(0,0);
+}
 
 void FastSLAM2::processMeasurementAt(const ros::Time& t,
                                      const std::vector<MeasRB>& meas_vec,
                                      const LidarExtrinsics& ex)
 {
-  // Get current motion for enhanced covariance
   double dt = 0.01;
-  double current_vx = 0.0, current_vy = 0.0, current_r = 0.0;
   if (!last_prop_stamp_.isZero()) {
     dt = std::max(0.0, (t - last_prop_stamp_).toSec());
-    // Use latest odometry for motion characteristics
-    if (!odom_buf_.empty()) {
-      const auto& latest_odom = odom_buf_.back();
-      current_vx = latest_odom.vx;
-      current_vy = latest_odom.vy; 
-      current_r = latest_odom.r;
-    }
   }
 
-  // Base measurement noise matrix for data association
   Eigen::Matrix2d base_R = Eigen::Matrix2d::Identity();
-  base_R(0,0) = 0.01;  // Base range noise
-  base_R(1,1) = 0.01;  // Base bearing noise
+  base_R(0,0) = 0.01;
+  base_R(1,1) = 0.01;
 
   for (auto& p : P_) {
-    // 1) Enhanced global data association
     GlobalAssignment assignment;
     if (association_method_ == "jcbb") {
       assignment = data_assoc_->associateJCBB(p, meas_vec, ex, base_R);
-    } else if (association_method_ == "hungarian") {
-      assignment = data_assoc_->associateGlobal(p, meas_vec, ex, base_R);
     } else {
       assignment = data_assoc_->associateGreedy(p, meas_vec, ex, base_R);
     }
 
-    // 2) Enhanced FastSLAM 2.0 pose proposal with information weighting
     double log_proposal_correction = 0.0;
     computeEnhancedPoseProposal(p, assignment, meas_vec, ex, dt, log_proposal_correction);
     p.log_w += log_proposal_correction;
 
-    // 3) Track landmarks seen this frame for FoV-miss penalty
     std::vector<bool> lm_seen(p.map.size(), false);
-
-    // 4) Update matched landmarks using EKF
     updateMatchedLandmarks(p, assignment, meas_vec, ex, lm_seen);
 
-    // 5) Process unmatched measurements with world-space merging
     int promotions_this_frame = 0;
-    processUnmatchedMeasurements(p, assignment.unmatched_measurements, meas_vec, ex, promotions_this_frame);
+    processUnmatchedMeasurements(p, assignment.unmatched_measurements, meas_vec, ex,
+                                 promotions_this_frame);
 
-    // 6) Manage birth tracks (age & promote)
-    manageBirthTracks(p, promotions_this_frame);
-
-    // 7) Apply weight adjustments (penalties and bonuses)
     applyWeightAdjustments(p, assignment, lm_seen, ex, promotions_this_frame);
+  }
 
-  } // for each particle
-
-  // 8) Normalize weights (log-sum-exp)
   double max_logw = -1e300;
   for (const auto& p : P_) max_logw = std::max(max_logw, p.log_w);
 
@@ -456,18 +362,14 @@ void FastSLAM2::processMeasurementAt(const ros::Time& t,
     for (auto& p : P_) p.weight /= sum_w;
   }
 
-  // 9) Adaptive resampling
   double inv_neff = 0.0; for (const auto& p : P_) inv_neff += p.weight * p.weight;
   const double neff = (inv_neff > 0.0) ? (1.0 / inv_neff) : 0.0;
-
   if (neff < neff_ratio_ * P_.size()) {
     systematicResample(P_, rng_);
-    ROS_INFO_THROTTLE(1.0, "[FastSLAM2] Resampled: Neff=%.1f < %.1f",
-                      neff, neff_ratio_ * P_.size());
+    ROS_INFO_THROTTLE(1.0, "[FastSLAM2] Resampled: Neff=%.1f < %.1f", neff, neff_ratio_ * P_.size());
     for (auto& p : P_) p.log_w = std::log(std::max(1e-300, p.weight));
   }
 
-  // 10) Cache best & mean
   best_idx_ = 0; double bestw = -1.0;
   for (int i = 0; i < (int)P_.size(); ++i)
     if (P_[i].weight > bestw) { bestw = P_[i].weight; best_idx_ = i; }
@@ -481,10 +383,7 @@ void FastSLAM2::processMeasurementAt(const ros::Time& t,
   mean_x_ = cx; mean_y_ = cy; mean_yaw_ = std::atan2(cyaw_s, cyaw_c);
 }
 
-// ============================================================================
-// Enhanced helper functions
-// ============================================================================
-
+// ========== proposal / updates / weights (same as before) ==========
 void FastSLAM2::computeEnhancedPoseProposal(Particle& p,
                                             const GlobalAssignment& assignment,
                                             const std::vector<MeasRB>& meas_vec,
@@ -492,7 +391,6 @@ void FastSLAM2::computeEnhancedPoseProposal(Particle& p,
                                             double dt,
                                             double& log_proposal_correction)
 {
-  // Get current motion for enhanced prior
   double current_vx = 0.0, current_vy = 0.0, current_r = 0.0;
   if (!odom_buf_.empty()) {
     const auto& latest_odom = odom_buf_.back();
@@ -502,7 +400,7 @@ void FastSLAM2::computeEnhancedPoseProposal(Particle& p,
   }
 
   Eigen::Vector3d mu_prior(p.x, p.y, p.yaw);
-  Eigen::Matrix3d Qprior = Qx_from_enhanced_noise_dt(motion_, current_vx, current_vy, current_r, dt);
+  Eigen::Matrix3d Qprior = motion_.getMotionCovariance(current_vx, current_vy, current_r, dt);
   Qprior += 1e-9 * Eigen::Matrix3d::Identity();
 
   Eigen::Matrix3d Lambda = Qprior.inverse();
@@ -512,109 +410,79 @@ void FastSLAM2::computeEnhancedPoseProposal(Particle& p,
   int num_pose_meas = 0;
   double total_information = 0.0;
 
-  // Use enhanced matches for pose proposal
   for (const auto& match : assignment.matches) {
     const int m_idx = match.first;
     const int l_idx = match.second;
     const auto& lm = p.map[l_idx];
     const auto& meas = meas_vec[m_idx];
-    
-    // Information-weighted proposal: use high-quality matches more
-    double information_weight = 1.0;
-    if (assignment.average_compatibility > high_quality_threshold_) {
-      information_weight = 1.3;  // Boost high-quality assignments
-    } else if (assignment.average_compatibility < 0.4) {
-      information_weight = 0.6;  // Downweight poor assignments
-    }
-    
-    // Enhanced stability criterion
+
     bool is_informative = lm.confirmed && (lm.Sigma.trace() <= proposal_max_sigma_trace_);
     if (!lm.confirmed) {
       is_informative = (lm.Sigma.trace() <= proposal_max_sigma_trace_ * 0.6) && (lm.hits >= 2);
     }
-    
     if (!is_informative) continue;
 
-    // Build measurement Jacobians
     Eigen::Matrix2d R = Eigen::Matrix2d::Zero();
     R(0,0) = meas.r_var; R(1,1) = meas.b_var;
-    
+
     double r_hat, b_hat;
     Eigen::Matrix2d H;
     Eigen::Matrix<double,2,3> Gx;
     predictRBWithJacobians(p.x, p.y, p.yaw, lm.mu, ex, r_hat, b_hat, Gx, H);
 
-    Eigen::Vector2d nu;
-    nu << (meas.r - r_hat), wrapToPi(meas.b - b_hat);
-
+    Eigen::Vector2d nu; nu << (meas.r - r_hat), wrapToPi(meas.b - b_hat);
     Eigen::Matrix2d S = H * lm.Sigma * H.transpose() + R;
-    
-    // Adaptive R based on landmark confidence
-    if (!lm.confirmed) {
-      S += R * (unconfirmed_R_scale_ - 1.0);
-    }
-    
+    if (!lm.confirmed) S += R * (unconfirmed_R_scale_ - 1.0);
+
     Eigen::LLT<Eigen::Matrix2d> llt(S);
     if (llt.info() != Eigen::Success) continue;
 
     const Eigen::Matrix2d S_inv = llt.solve(Eigen::Matrix2d::Identity());
     const Eigen::Matrix<double,3,2> Gt = Gx.transpose();
-    
-    // Apply information weighting
+
+    double information_weight = 1.0;
+    if (assignment.average_compatibility > high_quality_threshold_) information_weight = 1.3;
+    else if (assignment.average_compatibility < 0.4) information_weight = 0.6;
+
     const Eigen::Matrix3d info_contrib = Gt * S_inv * Gx * information_weight;
-    const Eigen::Vector3d eta_contrib = Gt * S_inv * nu * information_weight;
-    
+    const Eigen::Vector3d eta_contrib  = Gt * S_inv * nu * information_weight;
     Lambda += info_contrib;
-    eta += eta_contrib;
-    
+    eta    += eta_contrib;
+
     log_det_S_norm_sum += std::log(std::max(1e-18, S.determinant()));
-    total_information += S_inv.trace() * information_weight;
+    total_information  += S_inv.trace() * information_weight;
     ++num_pose_meas;
   }
 
-  // Enhanced proposal strategy
   Eigen::Matrix3d Sigma_q = Lambda.inverse();
   Eigen::Vector3d mu_q = Sigma_q * eta;
-  
-  // Adaptive sampling based on information content
-  bool high_info_proposal = (total_information >= min_information_for_proposal_) && (num_pose_meas >= 1);
-  
-  Eigen::Vector3d x_samp = mu_q;  // Default to mean
-  
-  if (high_info_proposal && proposal_sample_every_k_ > 0) {
+
+  Eigen::Vector3d x_samp = mu_q;
+  const bool high_info = (total_information >= min_information_for_proposal_) && (num_pose_meas >= 1);
+  if (high_info && proposal_sample_every_k_ > 0) {
     static uint64_t frame_idx = 0;
     int sample_freq = std::max(1, proposal_sample_every_k_);
     if (assignment.average_compatibility > high_quality_threshold_) {
-      sample_freq = std::max(1, sample_freq / 2);  // Sample more with high quality
+      sample_freq = std::max(1, sample_freq / 2);
     }
     if ((frame_idx++ % sample_freq) == 0) {
       x_samp = sampleGaussian(mu_q, Sigma_q, rng_);
     }
-  } else if (num_pose_meas == 0) {
-    // Add small diversity jitter when no measurements
-    std::normal_distribution<double> jitter_dist(0.0, 0.005);
-    x_samp(0) += jitter_dist(rng_);
-    x_samp(1) += jitter_dist(rng_);
-    x_samp(2) += jitter_dist(rng_) * 0.5;
   }
 
-  // Update particle pose
   p.x = x_samp(0);
   p.y = x_samp(1);
-  p.yaw = wrapToPi(x_samp(2));
+  p.yaw = std::atan2(std::sin(x_samp(2)), std::cos(x_samp(2)));
 
-  // Enhanced importance weight correction
   const double log_p_motion = logGaussian(x_samp, mu_prior, Qprior);
-  const double log_q = logGaussian(x_samp, mu_q, Sigma_q);
-  const double log_lik_norm = (num_pose_meas > 0) ? 
-      (-0.5 * log_det_S_norm_sum - 0.5 * num_pose_meas * std::log(2*M_PI)) : 0.0;
-  
-  // Information quality bonus
+  const double log_q        = logGaussian(x_samp, mu_q,    Sigma_q);
+  const double log_lik_norm =
+      (num_pose_meas > 0) ? (-0.5 * log_det_S_norm_sum - 0.5 * num_pose_meas * std::log(2*M_PI)) : 0.0;
+
   double info_bonus = 0.0;
-  if (high_info_proposal && assignment.average_compatibility > high_quality_threshold_) {
+  if (high_info && assignment.average_compatibility > high_quality_threshold_) {
     info_bonus = high_quality_bonus_ + information_bonus_scale_ * std::log1p(total_information);
   }
-  
   log_proposal_correction = log_p_motion - log_q + log_lik_norm + info_bonus;
 }
 
@@ -638,11 +506,11 @@ void FastSLAM2::updateMatchedLandmarks(Particle& p,
     predictMeasurementRB(p.x, p.y, p.yaw, lm.mu, ex, r_h, b_h, H);
     Eigen::Vector2d nu; nu << (meas.r - r_h), wrapToPi(meas.b - b_h);
 
-    const Eigen::Matrix2d S = H * lm.Sigma * H.transpose() + R_eff;
+    const Eigen::Matrix2d S    = H * lm.Sigma * H.transpose() + R_eff;
     const Eigen::Matrix2d Sinv = S.inverse();
-    const Eigen::Matrix2d K = lm.Sigma * H.transpose() * Sinv;
+    const Eigen::Matrix2d K    = lm.Sigma * H.transpose() * Sinv;
 
-    lm.mu = lm.mu + K * nu;
+    lm.mu    = lm.mu + K * nu;
     lm.Sigma = (Eigen::Matrix2d::Identity() - K * H) * lm.Sigma;
 
     lm.hits++;
@@ -661,13 +529,11 @@ void FastSLAM2::processUnmatchedMeasurements(Particle& p,
   for (int k : unmatched_indices) {
     const auto& m = meas_vec[k];
 
-    // Convert to world coordinates
     Eigen::Vector2d z_world; Eigen::Matrix2d Jrb;
     measRBToWorld(p.x, p.y, p.yaw, ex, m.r, m.b, z_world, Jrb);
     const Eigen::Matrix2d Rw = Jrb * (Eigen::Matrix2d() << m.r_var, 0, 0, m.b_var).finished()
                              * Jrb.transpose();
 
-    // Try world-space merge into existing landmark
     int best_j = -1; double best_d2 = std::numeric_limits<double>::infinity();
     for (int j = 0; j < (int)p.map.size(); ++j) {
       const double d2 = worldMaha2(z_world, Rw, p.map[j]);
@@ -675,7 +541,6 @@ void FastSLAM2::processUnmatchedMeasurements(Particle& p,
     }
 
     if (best_j >= 0 && best_d2 <= chi2_gate_world_) {
-      // Merge with existing landmark
       auto& lm = p.map[best_j];
 
       Eigen::Matrix2d R = Eigen::Matrix2d::Zero();
@@ -686,11 +551,11 @@ void FastSLAM2::processUnmatchedMeasurements(Particle& p,
       predictMeasurementRB(p.x, p.y, p.yaw, lm.mu, ex, r_h, b_h, H);
       Eigen::Vector2d nu; nu << (m.r - r_h), wrapToPi(m.b - b_h);
 
-      const Eigen::Matrix2d S = H * lm.Sigma * H.transpose() + R_eff;
+      const Eigen::Matrix2d S    = H * lm.Sigma * H.transpose() + R_eff;
       const Eigen::Matrix2d Sinv = S.inverse();
-      const Eigen::Matrix2d K = lm.Sigma * H.transpose() * Sinv;
+      const Eigen::Matrix2d K    = lm.Sigma * H.transpose() * Sinv;
 
-      lm.mu = lm.mu + K * nu;
+      lm.mu    = lm.mu + K * nu;
       lm.Sigma = (Eigen::Matrix2d::Identity() - K * H) * lm.Sigma;
       lm.hits++; 
       if (!lm.confirmed && lm.hits >= confirm_hits_) lm.confirmed = true;
@@ -698,7 +563,7 @@ void FastSLAM2::processUnmatchedMeasurements(Particle& p,
       continue;
     }
 
-    // Update/create birth track
+    // birth tracks
     int best_bt = -1; double best_d2_euclid = std::numeric_limits<double>::infinity();
     for (int bti = 0; bti < (int)p.births.size(); ++bti) {
       const double d2 = (z_world - p.births[bti].mu).squaredNorm();
@@ -722,40 +587,26 @@ void FastSLAM2::processUnmatchedMeasurements(Particle& p,
       p.births.push_back(bt);
     }
   }
-}
 
-void FastSLAM2::manageBirthTracks(Particle& p, int& promotions_this_frame) {
-  // Age all birth tracks
   for (auto& bt : p.births) bt.age++;
-  
-  // Check for promotions and removals
   for (int bti = (int)p.births.size()-1; bti >= 0; --bti) {
     auto& bt = p.births[bti];
-    
     if (bt.hits >= birth_required_hits_) {
-      // Check if too close to existing landmarks
       bool near_lm = false;
       for (const auto& lm : p.map) {
-        if ((bt.mu - lm.mu).norm() <= birth_promote_radius_) { 
-          near_lm = true; 
-          break; 
-        }
+        if ((bt.mu - lm.mu).norm() <= birth_promote_radius_) { near_lm = true; break; }
       }
-      
       if (!near_lm && mapping_enabled_) {
-        // Promote to landmark
         Landmark lm;
         lm.mu = bt.mu;
         lm.Sigma = bt.Sigma + landmark_prior_var_ * Eigen::Matrix2d::Identity();
-        lm.hits = 1; 
-        lm.misses = 0;
+        lm.hits = 1; lm.misses = 0;
         lm.confirmed = (confirm_hits_ <= 1);
         p.map.push_back(lm);
         promotions_this_frame++;
       }
       p.births.erase(p.births.begin() + bti);
     } else if (bt.age > birth_max_age_) {
-      // Remove old birth track
       p.births.erase(p.births.begin() + bti);
     }
   }
@@ -763,130 +614,80 @@ void FastSLAM2::manageBirthTracks(Particle& p, int& promotions_this_frame) {
 
 void FastSLAM2::applyWeightAdjustments(Particle& p,
                                        const GlobalAssignment& assignment,
-                                       const std::vector<bool>& lm_seen,
-                                       const LidarExtrinsics& ex,
+                                       const std::vector<bool>& /*lm_seen*/,
+                                       const LidarExtrinsics& /*ex*/,
                                        int promotions_this_frame)
 {
-  // Penalty for new landmarks
   if (promotions_this_frame > 0) {
     p.log_w -= new_landmark_penalty_ * promotions_this_frame;
   }
-  
-  // FoV miss penalty
-  int fov_miss_cnt = 0;
-  for (int j = 0; j < (int)p.map.size(); ++j) {
-    const auto& lm = p.map[j];
-    if (!lm.confirmed) continue;
-    if (!inFoV(p, lm.mu, ex)) continue;
-    if (j < (int)lm_seen.size() && lm_seen[j]) continue;
-    fov_miss_cnt++;
-  }
-  if (fov_miss_cnt > 0) {
-    p.log_w -= fov_miss_penalty_ * fov_miss_cnt;
-  }
-  
-  // High-quality assignment bonus
-  if (assignment.average_compatibility > high_quality_threshold_ && assignment.matches.size() >= 2) {
+  if (assignment.average_compatibility > high_quality_threshold_ &&
+      assignment.matches.size() >= 2) {
     double quality_bonus = high_quality_bonus_ * assignment.average_compatibility;
     p.log_w += quality_bonus;
   }
 }
 
-// ============================================================================
-// Geometry helpers
-// ============================================================================
-
-bool FastSLAM2::inFoV(const Particle& p,
-                      const Eigen::Vector2d& mu_world,
-                      const LidarExtrinsics& ex) const
-{
-  const double cy = std::cos(p.yaw), sy = std::sin(p.yaw);
-  const double lx_w = p.x + cy*ex.x - sy*ex.y;
-  const double ly_w = p.y + sy*ex.x + cy*ex.y;
-
-  const double dx = mu_world.x() - lx_w;
-  const double dy = mu_world.y() - ly_w;
-
-  const double yaw_lw = p.yaw + ex.yaw;
-  const double c = std::cos(yaw_lw), s = std::sin(yaw_lw);
-  const double lx =  c*dx + s*dy;
-  const double ly = -s*dx + c*dy;
-
-  const double r = std::hypot(lx, ly);
-  const double b = std::atan2(ly, lx);
-  return (r <= fov_range_max_ && std::fabs(b) <= fov_bearing_rad_);
-}
-
-double FastSLAM2::worldMaha2(const Eigen::Vector2d& z_world,
-                             const Eigen::Matrix2d& Rw,
-                             const Landmark& lm) const
-{
-  const Eigen::Matrix2d Sw   = lm.Sigma + Rw;
-  const Eigen::Matrix2d Sinv = Sw.inverse();
-  const Eigen::Vector2d d    = z_world - lm.mu;
-  return (d.transpose() * Sinv * d)(0,0);
-}
-
-// ============================================================================
-// Visualization
-// ============================================================================
-
-void FastSLAM2::publishViz(const ros::Time& t) {
-  // Particles (arrows)
-  visualization_msgs::MarkerArray particle_markers;
-  int id = 0;
-  for (const auto& p : P_) {
-    visualization_msgs::Marker m;
-    m.header.stamp = t;
-    m.header.frame_id = map_frame_;
-    m.ns = "particles";
-    m.id = id++;
-    m.type = visualization_msgs::Marker::ARROW;
-    m.action = visualization_msgs::Marker::ADD;
-    m.pose.position.x = p.x; m.pose.position.y = p.y; m.pose.position.z = 0.05;
-    tf2::Quaternion q; q.setRPY(0, 0, p.yaw);
-    m.pose.orientation = tf2::toMsg(q);
-    m.scale.x = 0.3; m.scale.y = 0.05; m.scale.z = 0.05;
-    m.color.a = 0.3 + 0.7 * (p.weight * P_.size());
-    m.color.r = 1.0; m.color.g = 0.0; m.color.b = 0.0;
-    particle_markers.markers.push_back(m);
-  }
-  pub_particles_.publish(particle_markers);
-
-  // Particle pose array
-  geometry_msgs::PoseArray poses;
-  poses.header.stamp = t;
-  poses.header.frame_id = map_frame_;
+// ========== publish pose arrays ==========
+void FastSLAM2::publishCoreOutputs(const ros::Time& t) {
+  // Particles
+  geometry_msgs::PoseArray particles;
+  particles.header.stamp = t;
+  particles.header.frame_id = map_frame_;
   for (const auto& p : P_) {
     geometry_msgs::Pose pose;
     pose.position.x = p.x; pose.position.y = p.y; pose.position.z = 0.0;
-    tf2::Quaternion q; q.setRPY(0,0,p.yaw); pose.orientation = tf2::toMsg(q);
-    poses.poses.push_back(pose);
+    tf2::Quaternion q; q.setRPY(0,0,p.yaw);
+    pose.orientation = tf2::toMsg(q);
+    particles.poses.push_back(pose);
   }
-  pub_particles_posearray_.publish(poses);
+  pub_particles_posearray_.publish(particles);
 
-  // Landmarks from best particle
-  visualization_msgs::MarkerArray landmark_markers;
+  // Landmarks (best)
   const auto& bestP = P_[std::max(0, std::min<int>(best_idx_, (int)P_.size()-1))];
-  int lm_id = 0;
-  for (const auto& lm : bestP.map) {
-    visualization_msgs::Marker m;
-    m.header.stamp = t;
-    m.header.frame_id = map_frame_;
-    m.ns = "landmarks";
-    m.id = lm_id++;
-    m.type = visualization_msgs::Marker::SPHERE;
-    m.action = visualization_msgs::Marker::ADD;
-    m.pose.position.x = lm.mu.x();
-    m.pose.position.y = lm.mu.y();
-    m.pose.position.z = 0.05;
-    m.scale.x = m.scale.y = m.scale.z = 0.18;
-    m.color.a = 1.0; m.color.r = 0.0; m.color.g = 0.0; m.color.b = 1.0;
-    landmark_markers.markers.push_back(m);
-  }
-  pub_map_markers_.publish(landmark_markers);
 
-  // Odometry estimates
+  geometry_msgs::PoseArray lms_all;
+  lms_all.header.stamp = t;
+  lms_all.header.frame_id = map_frame_;
+  for (const auto& lm : bestP.map) {
+    geometry_msgs::Pose pose;
+    pose.position.x = lm.mu.x();
+    pose.position.y = lm.mu.y();
+    pose.position.z = 0.0;
+    pose.orientation.w = 1.0;
+    lms_all.poses.push_back(pose);
+  }
+  pub_landmarks_posearray_.publish(lms_all);
+
+  geometry_msgs::PoseArray lms_confirmed;
+  lms_confirmed.header.stamp = t;
+  lms_confirmed.header.frame_id = map_frame_;
+  for (const auto& lm : bestP.map) {
+    if (!lm.confirmed) continue;
+    geometry_msgs::Pose pose;
+    pose.position.x = lm.mu.x();
+    pose.position.y = lm.mu.y();
+    pose.position.z = 0.0;
+    pose.orientation.w = 1.0;
+    lms_confirmed.poses.push_back(pose);
+  }
+  pub_landmarks_posearray_confirmed_.publish(lms_confirmed);
+
+  // Births (best)
+  geometry_msgs::PoseArray births;
+  births.header.stamp = t;
+  births.header.frame_id = map_frame_;
+  for (const auto& bt : bestP.births) {
+    geometry_msgs::Pose pose;
+    pose.position.x = bt.mu.x();
+    pose.position.y = bt.mu.y();
+    pose.position.z = 0.0;
+    pose.orientation.w = 1.0;
+    births.poses.push_back(pose);
+  }
+  pub_births_posearray_.publish(births);
+
+  // Odom
   const auto& bp = bestP;
   nav_msgs::Odometry odom_best;
   odom_best.header.stamp = t;
@@ -894,7 +695,6 @@ void FastSLAM2::publishViz(const ros::Time& t) {
   odom_best.child_frame_id  = base_frame_;
   odom_best.pose.pose.position.x = bp.x;
   odom_best.pose.pose.position.y = bp.y;
-  odom_best.pose.pose.position.z = 0.0;
   tf2::Quaternion q_best; q_best.setRPY(0,0,bp.yaw);
   odom_best.pose.pose.orientation = tf2::toMsg(q_best);
   pub_slam_odom_.publish(odom_best);
@@ -905,7 +705,4 @@ void FastSLAM2::publishViz(const ros::Time& t) {
   tf2::Quaternion q_mean; q_mean.setRPY(0,0,mean_yaw_);
   odom_mean.pose.pose.orientation = tf2::toMsg(q_mean);
   pub_slam_odom_mean_.publish(odom_mean);
-
-  ROS_INFO_THROTTLE(1.0, "[FastSLAM2] Viz: particles=%zu landmarks=%zu (best=%d) method=%s",
-                    P_.size(), bestP.map.size(), best_idx_, association_method_.c_str());
 }
