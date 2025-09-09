@@ -13,7 +13,7 @@ odometry:
   truth_topic: "/odom"
   ekf_topic: "/qcar/ekf/odom"
 
-# Initialize particles from params (or snap to first odom if enabled below)
+# Initialize particles
 seed_from_params: true
 overwrite_with_odom_on_first_msg: false
 init:
@@ -30,25 +30,48 @@ odom_buffer_window_sec: 2.0
 particles: 80
 resample_neff_ratio: 0.5
 
-# Constant white process noise (world frame)
+# Process noise
 motion_noise:
   sigma_x:   0.04
   sigma_y:   0.04
   sigma_yaw: 0.01
 
-# Front-end (choose one)
+# Data association
 association:
   mode: "id"          # "id" | "nn_rb"
-  chi2_gate_rb: 5.99  # used only when mode == "nn_rb"
+  chi2_gate_rb: 5.99
 
 # Landmark behavior
 landmarks:
-  init_var: 0.15          # prior added to J Rz J^T
-  confirm_hits: 2         # LM becomes 'confirmed' after this many matched hits
-  lock_hits: 6            # OR lock when hits reach this count
-  lock_cov_trace: 0.02    # OR lock when trace(Sigma) <= this
+  init_var: 0.15
+  confirm_hits: 2
+  lock_hits: 6
+  lock_cov_trace: 0.02
 
-# Viz node (optional)
-show_confirmed_only: true
-map_frame: "odom"
-markers_topic: "/slam/map_markers"
+# --- Visualization (minimal & fast — single combined topic with namespaces) ---
+visualization:
+  topic: /slam/map_markers
+
+  all:
+    ns: landmarks_all
+    sphere_diam: 0.18
+    z_offset: 0.05
+    rgba: [1.0, 0.5, 0.0, 1.0]     # orange
+
+  confirmed:
+    ns: landmarks_confirmed
+    sphere_diam: 0.18
+    z_offset: 0.05
+    rgba: [0.0, 0.0, 1.0, 1.0]     # blue
+
+  locked:
+    ns: landmarks_locked
+    sphere_diam: 0.18
+    z_offset: 0.05
+    rgba: [0.0, 1.0, 1.0, 1.0]     # cyan
+
+  unmatched:
+    ns: landmarks_unmatched
+    sphere_diam: 0.16
+    z_offset: 0.05
+    rgba: [1.0, 0.0, 0.0, 1.0]     # red

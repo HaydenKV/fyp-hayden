@@ -150,6 +150,19 @@ target_link_libraries(slam_node
   ${catkin_LIBRARIES}
 )
 
+# --- FastSLAM viz node (publish layered markers to /slam/map_markers)
+add_executable(fastslam2_viz_node
+  src/slam/fastslam2_viz_node.cpp
+)
+add_dependencies(fastslam2_viz_node
+  ${${PROJECT_NAME}_EXPORTED_TARGETS}
+  ${catkin_EXPORTED_TARGETS}
+)
+target_link_libraries(fastslam2_viz_node
+  ${catkin_LIBRARIES}
+)
+
+
 ## =========================================================
 ## Installation
 ## =========================================================
@@ -159,6 +172,7 @@ install(TARGETS
   cones_viz_node
   cone_tracker_node
   slam_node
+  fastslam2_viz_node
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

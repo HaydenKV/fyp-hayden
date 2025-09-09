@@ -2,274 +2,185 @@
 #include <geometry_msgs/PoseArray.h>
 #include <visualization_msgs/MarkerArray.h>
 #include <visualization_msgs/Marker.h>
+#include <string>
+#include <vector>
+
+struct LayerCfg {
+  std::string ns;            // namespace on the combined topic (/slam/map_markers)
+  double sphere_diam{0.18};
+  double z_offset{0.05};
+  float  r{1.f}, g{1.f}, b{1.f}, a{1.f};
+};
 
 struct VizCfg {
-  // Inputs
-  std::string particles_pose_topic{"/slam/particles_pose"};
-  std::string landmarks_pose_confirmed_topic{"/slam/landmarks_pose_confirmed"};
-  std::string landmarks_pose_all_topic{"/slam/landmarks_pose"};
-  std::string unmatched_pose_topic{"/slam/unmatched_pose"};
-  std::string births_pose_topic{"/slam/births_pose"}; // optional / not used by SLAM now
+  std::string topic{"/slam/map_markers"};  // combined topic (one per frame)
+  LayerCfg all, confirmed, locked, unmatched;
+};
 
-  // Outputs (RViz topics)
-  std::string particles_marker_topic{"/slam/particles"};
-  std::string landmarks_marker_topic{"/slam/map_markers"}; // final topic used by RViz
+// ---- helpers ----------------------------------------------------------------
+static void parseRGBA(const std::vector<double>& v, float& r, float& g, float& b, float& a) {
+  r = (v.size()>0)?(float)v[0]:1.f;
+  g = (v.size()>1)?(float)v[1]:1.f;
+  b = (v.size()>2)?(float)v[2]:1.f;
+  a = (v.size()>3)?(float)v[3]:1.f;
+}
 
-  // Behavior
-  bool show_confirmed_only{true};
-  bool include_births_if_empty{true};
-  bool use_latest_tf{true};
+static visualization_msgs::Marker makeSphereList(
+    int id, const std::string& ns, const std::string& frame,
+    double diam, float r, float g, float b, float a)
+{
+  visualization_msgs::Marker m;
+  m.header.frame_id = frame.empty() ? "odom" : frame;
+  m.header.stamp    = ros::Time(0);               // let RViz use latest TF
+  m.ns = ns;
+  m.id = id;                                      // stable per layer
+  m.type = visualization_msgs::Marker::SPHERE_LIST; // type=7 (efficient)
+  m.action = visualization_msgs::Marker::ADD;
+  m.pose.orientation.w = 1.0;
+  m.scale.x = diam; m.scale.y = diam; m.scale.z = diam;
+  m.color.r = r; m.color.g = g; m.color.b = b; m.color.a = a;
+  m.lifetime = ros::Duration(0.0);
+  return m;
+}
 
-  // Styling
-  double particle_len{0.30};
-  double particle_width{0.05};
-  double particle_height{0.05};
-  double landmark_scale{0.18};
-  double unmatched_scale{0.16};
-  double z_offset{0.05};
-  double particle_alpha{0.9};
-  double landmark_alpha{1.0};
-  double unmatched_alpha{1.0};
-} Cfg;
+static visualization_msgs::Marker makeDelete(
+    int id, const std::string& ns, const std::string& frame)
+{
+  visualization_msgs::Marker m;
+  m.header.frame_id = frame.empty() ? "odom" : frame;
+  m.header.stamp    = ros::Time(0);
+  m.ns = ns;
+  m.id = id;
+  m.action = visualization_msgs::Marker::DELETE;
+  return m;
+}
 
+static void posesToPoints(const geometry_msgs::PoseArray::ConstPtr& src,
+                          double z_offset,
+                          std::vector<geometry_msgs::Point>& out)
+{
+  out.clear();
+  if (!src) return;
+  out.reserve(src->poses.size());
+  for (const auto& pose : src->poses) {
+    geometry_msgs::Point p;
+    p.x = pose.position.x;
+    p.y = pose.position.y;
+    p.z = z_offset;
+    out.push_back(p);
+  }
+}
+
+// ---- node -------------------------------------------------------------------
 class FastSLAM2Viz {
 public:
   FastSLAM2Viz(ros::NodeHandle& nh, ros::NodeHandle& pnh) : nh_(nh), pnh_(pnh) {
-    // Params
-    pnh_.param("particles_pose_topic", Cfg.particles_pose_topic, Cfg.particles_pose_topic);
-    pnh_.param("landmarks_pose_confirmed_topic", Cfg.landmarks_pose_confirmed_topic, Cfg.landmarks_pose_confirmed_topic);
-    pnh_.param("landmarks_pose_all_topic", Cfg.landmarks_pose_all_topic, Cfg.landmarks_pose_all_topic);
-    pnh_.param("unmatched_pose_topic", Cfg.unmatched_pose_topic, Cfg.unmatched_pose_topic);
-    pnh_.param("births_pose_topic", Cfg.births_pose_topic, Cfg.births_pose_topic);
-    pnh_.param("particles_marker_topic", Cfg.particles_marker_topic, Cfg.particles_marker_topic);
-    pnh_.param("landmarks_marker_topic", Cfg.landmarks_marker_topic, Cfg.landmarks_marker_topic);
+    loadParams();
+    pub_ = nh_.advertise<visualization_msgs::MarkerArray>(cfg_.topic, 1, false);
 
-    pnh_.param("show_confirmed_only", Cfg.show_confirmed_only, Cfg.show_confirmed_only);
-    pnh_.param("include_births_if_empty", Cfg.include_births_if_empty, Cfg.include_births_if_empty);
-    pnh_.param("use_latest_tf", Cfg.use_latest_tf, Cfg.use_latest_tf);
+    // Subscribe to SLAM’s PoseArrays (unchanged topics)
+    sub_all_  = nh_.subscribe("/slam/landmarks_pose",           1, &FastSLAM2Viz::cbAll,  this);
+    sub_conf_ = nh_.subscribe("/slam/landmarks_pose_confirmed", 1, &FastSLAM2Viz::cbConf, this);
+    sub_lock_ = nh_.subscribe("/slam/landmarks_pose_locked",    1, &FastSLAM2Viz::cbLock, this);
+    sub_unm_  = nh_.subscribe("/slam/unmatched_pose",           1, &FastSLAM2Viz::cbUnm,  this);
 
-    pnh_.param("particle_len", Cfg.particle_len, Cfg.particle_len);
-    pnh_.param("particle_width", Cfg.particle_width, Cfg.particle_width);
-    pnh_.param("particle_height", Cfg.particle_height, Cfg.particle_height);
-    pnh_.param("landmark_scale", Cfg.landmark_scale, Cfg.landmark_scale);
-    pnh_.param("unmatched_scale", Cfg.unmatched_scale, Cfg.unmatched_scale);
-    pnh_.param("z_offset", Cfg.z_offset, Cfg.z_offset);
-    pnh_.param("particle_alpha", Cfg.particle_alpha, Cfg.particle_alpha);
-    pnh_.param("landmark_alpha", Cfg.landmark_alpha, Cfg.landmark_alpha);
-    pnh_.param("unmatched_alpha", Cfg.unmatched_alpha, Cfg.unmatched_alpha);
-
-    pub_particles_markers_ = nh_.advertise<visualization_msgs::MarkerArray>(Cfg.particles_marker_topic, 1);
-    pub_landmarks_markers_ = nh_.advertise<visualization_msgs::MarkerArray>(Cfg.landmarks_marker_topic, 1);
-
-    sub_particles_ = nh_.subscribe(Cfg.particles_pose_topic, 1, &FastSLAM2Viz::cbParticles, this);
-    sub_lms_conf_  = nh_.subscribe(Cfg.landmarks_pose_confirmed_topic, 1, &FastSLAM2Viz::cbLandmarksConfirmed, this);
-    sub_lms_all_   = nh_.subscribe(Cfg.landmarks_pose_all_topic, 1, &FastSLAM2Viz::cbLandmarksAll, this);
-    sub_unmatched_ = nh_.subscribe(Cfg.unmatched_pose_topic, 1, &FastSLAM2Viz::cbUnmatched, this);
-    sub_births_    = nh_.subscribe(Cfg.births_pose_topic, 1, &FastSLAM2Viz::cbBirths, this);
-
-    ROS_INFO("[FastSLAM2Viz] Inputs: %s, %s, %s, %s | Outputs: %s, %s",
-      Cfg.particles_pose_topic.c_str(),
-      Cfg.landmarks_pose_confirmed_topic.c_str(),
-      Cfg.landmarks_pose_all_topic.c_str(),
-      Cfg.unmatched_pose_topic.c_str(),
-      Cfg.particles_marker_topic.c_str(),
-      Cfg.landmarks_marker_topic.c_str());
-  }
-
-private:
-  // cache last received arrays
-  geometry_msgs::PoseArray::ConstPtr last_conf_;
-  geometry_msgs::PoseArray::ConstPtr last_all_;
-  geometry_msgs::PoseArray::ConstPtr last_unmatched_;
-  geometry_msgs::PoseArray::ConstPtr last_births_;
-
-  void cbParticles(const geometry_msgs::PoseArray::ConstPtr& msg) {
-    visualization_msgs::MarkerArray arr;
-
-    if (msg->poses.empty()) {
-      // Publish a wipe to clear particle arrows
-      visualization_msgs::Marker wipe;
-      wipe.header.frame_id = msg->header.frame_id;
-      wipe.header.stamp    = Cfg.use_latest_tf ? ros::Time(0) : msg->header.stamp;
-      wipe.ns = "particles";
-      wipe.id = 0;
-      wipe.action = visualization_msgs::Marker::DELETEALL;
-      arr.markers.push_back(wipe);
-      pub_particles_markers_.publish(arr);
-      return;
-    }
-
-    // Wipe existing
-    wipeNs(arr, "particles", msg->header.frame_id, msg->header.stamp);
-
-    int id = 0;
-    for (const auto& pose : msg->poses) {
-      visualization_msgs::Marker m;
-      fillCommon(m, "particles", id++, msg->header.frame_id, msg->header.stamp);
-      m.type = visualization_msgs::Marker::ARROW;
-      m.pose = pose;
-      m.pose.position.z = Cfg.z_offset;
-      m.scale.x = Cfg.particle_len;
-      m.scale.y = Cfg.particle_width;
-      m.scale.z = Cfg.particle_height;
-      m.color.a = Cfg.particle_alpha;
-      m.color.r = 1.0; m.color.g = 0.0; m.color.b = 0.0;
-      arr.markers.push_back(m);
-    }
-    pub_particles_markers_.publish(arr);
-  }
-
-  void cbLandmarksConfirmed(const geometry_msgs::PoseArray::ConstPtr& msg) {
-    last_conf_ = msg;
-    publishLandmarks();
-  }
-  void cbLandmarksAll(const geometry_msgs::PoseArray::ConstPtr& msg) {
-    last_all_ = msg;
-    publishLandmarks();
-  }
-  void cbUnmatched(const geometry_msgs::PoseArray::ConstPtr& msg) {
-    last_unmatched_ = msg;
-    publishLandmarks();
-  }
-  void cbBirths(const geometry_msgs::PoseArray::ConstPtr& msg) {
-    last_births_ = msg;
-    publishLandmarks();
-  }
-
-  void publishLandmarks() {
-    // Choose source: prefer confirmed only if there are any; otherwise fall back to all
-    const bool have_conf = (last_conf_ && !last_conf_->poses.empty());
-    const bool have_all  = (last_all_  && !last_all_->poses.empty());
-    const auto& src = (Cfg.show_confirmed_only && have_conf) ? last_conf_
-                  : (have_all ? last_all_ : last_conf_);
-
-    const bool have_unmatched = (last_unmatched_ && !last_unmatched_->poses.empty());
-    const bool have_births    = (last_births_ && !last_births_->poses.empty());
-
-    if ((!src || src->poses.empty()) && !have_unmatched && !have_births) {
-      // Nothing to draw — avoid sending a DELETEALL-only frame
-      return;
-    }
-
-    // Use source header for timing; if none, prefer unmatched header
-    std_msgs::Header hdr;
-    if (src && !src->poses.empty()) hdr = src->header;
-    else if (have_unmatched)        hdr = last_unmatched_->header;
-    else                            hdr = last_births_->header;
-
-    visualization_msgs::MarkerArray arr;
-    wipeNs(arr, "landmarks", hdr.frame_id, hdr.stamp);
-
-    // Landmarks (blue)
-    if (src && !src->poses.empty()) {
-      visualization_msgs::Marker m;
-      fillCommon(m, "landmarks", 0, hdr.frame_id, hdr.stamp);
-      m.type = visualization_msgs::Marker::SPHERE_LIST;
-      m.scale.x = Cfg.landmark_scale;
-      m.scale.y = Cfg.landmark_scale;
-      m.scale.z = Cfg.landmark_scale;
-      m.color.a = Cfg.landmark_alpha;
-      m.color.r = 0.0; m.color.g = 0.0; m.color.b = 1.0;
-
-      m.points.reserve(src->poses.size());
-      for (const auto& pose : src->poses) {
-        geometry_msgs::Point p;
-        p.x = pose.position.x;
-        p.y = pose.position.y;
-        p.z = Cfg.z_offset;
-        m.points.push_back(p);
-      }
-      arr.markers.push_back(m);
-    }
-
-    // Unmatched (red)
-    if (have_unmatched) {
-      visualization_msgs::Marker u;
-      fillCommon(u, "landmarks_unmatched", 1, hdr.frame_id, hdr.stamp);
-      u.type = visualization_msgs::Marker::SPHERE_LIST;
-      u.scale.x = Cfg.unmatched_scale;
-      u.scale.y = Cfg.unmatched_scale;
-      u.scale.z = Cfg.unmatched_scale;
-      u.color.a = Cfg.unmatched_alpha;
-      u.color.r = 1.0; u.color.g = 0.0; u.color.b = 0.0;
-
-      u.points.reserve(last_unmatched_->poses.size());
-      for (const auto& pose : last_unmatched_->poses) {
-        geometry_msgs::Point p;
-        p.x = pose.position.x;
-        p.y = pose.position.y;
-        p.z = Cfg.z_offset;
-        u.points.push_back(p);
-      }
-      arr.markers.push_back(u);
-    }
-
-    // Optional: births (lighter blue) if we ever repopulate that topic
-    if (Cfg.include_births_if_empty && (!src || src->poses.empty()) && have_births) {
-      visualization_msgs::Marker b;
-      fillCommon(b, "births", 2, hdr.frame_id, hdr.stamp);
-      b.type = visualization_msgs::Marker::SPHERE_LIST;
-      b.scale.x = Cfg.landmark_scale * 0.85;
-      b.scale.y = Cfg.landmark_scale * 0.85;
-      b.scale.z = Cfg.landmark_scale * 0.85;
-      b.color.a = 0.6;
-      b.color.r = 0.2; b.color.g = 0.2; b.color.b = 1.0;
-      for (const auto& pose : last_births_->poses) {
-        geometry_msgs::Point p;
-        p.x = pose.position.x;
-        p.y = pose.position.y;
-        p.z = Cfg.z_offset;
-        b.points.push_back(p);
-      }
-      arr.markers.push_back(b);
-    }
-
-    pub_landmarks_markers_.publish(arr);
-  }
-
-  void wipeNs(visualization_msgs::MarkerArray& arr,
-              const std::string& ns,
-              const std::string& frame_id,
-              const ros::Time& src_stamp)
-  {
-    visualization_msgs::Marker wipe;
-    wipe.header.frame_id = frame_id;
-    wipe.header.stamp = Cfg.use_latest_tf ? ros::Time(0) : src_stamp;
-    wipe.ns = ns;
-    wipe.id = 0;
-    wipe.action = visualization_msgs::Marker::DELETEALL;
-    arr.markers.push_back(wipe);
-  }
-
-  void fillCommon(visualization_msgs::Marker& m,
-                  const std::string& ns,
-                  int id,
-                  const std::string& frame_id,
-                  const ros::Time& src_stamp)
-  {
-    m.header.frame_id = frame_id;
-    m.header.stamp    = Cfg.use_latest_tf ? ros::Time(0) : src_stamp;
-    m.ns = ns;
-    m.id = id;
-    m.action = visualization_msgs::Marker::ADD;
-    m.pose.orientation.w = 1.0;
+    ROS_INFO("[fastslam2_viz] publishing combined layered markers on %s (ns: %s, %s, %s, %s)",
+      cfg_.topic.c_str(),
+      cfg_.all.ns.c_str(), cfg_.confirmed.ns.c_str(),
+      cfg_.locked.ns.c_str(), cfg_.unmatched.ns.c_str());
   }
 
 private:
   ros::NodeHandle nh_, pnh_;
+  ros::Publisher pub_;
+  ros::Subscriber sub_all_, sub_conf_, sub_lock_, sub_unm_;
 
-  ros::Subscriber sub_particles_;
-  ros::Subscriber sub_lms_conf_;
-  ros::Subscriber sub_lms_all_;
-  ros::Subscriber sub_unmatched_;
-  ros::Subscriber sub_births_;
+  geometry_msgs::PoseArray::ConstPtr last_all_, last_conf_, last_lock_, last_unm_;
+  VizCfg cfg_;
 
-  ros::Publisher pub_particles_markers_;
-  ros::Publisher pub_landmarks_markers_;
+  void loadParams() {
+    pnh_.param("visualization/topic", cfg_.topic, cfg_.topic);
+
+    auto read_layer = [&](const std::string& base, LayerCfg& L,
+                          const char* def_ns, double def_d, double def_z,
+                          float dr, float dg, float db, float da) {
+      L.ns = def_ns; pnh_.param(base + "/ns", L.ns, L.ns);
+      L.sphere_diam = def_d; pnh_.param(base + "/sphere_diam", L.sphere_diam, L.sphere_diam);
+      L.z_offset    = def_z; pnh_.param(base + "/z_offset",    L.z_offset,    L.z_offset);
+      std::vector<double> rgba;
+      if (pnh_.getParam(base + "/rgba", rgba)) parseRGBA(rgba, L.r, L.g, L.b, L.a);
+      else { L.r = dr; L.g = dg; L.b = db; L.a = da; }
+    };
+
+    // Defaults = your requested colors
+    read_layer("visualization/all",       cfg_.all,       "landmarks_all",       0.18, 0.05, 1.f, 0.5f, 0.f, 1.f); // orange
+    read_layer("visualization/confirmed", cfg_.confirmed, "landmarks_confirmed", 0.18, 0.05, 0.f, 0.f, 1.f, 1.f);  // blue
+    read_layer("visualization/locked",    cfg_.locked,    "landmarks_locked",    0.18, 0.05, 0.f, 1.f, 1.f, 1.f);  // cyan
+    read_layer("visualization/unmatched", cfg_.unmatched, "landmarks_unmatched", 0.16, 0.05, 1.f, 0.f, 0.f, 1.f);  // red
+  }
+
+  // Pick a usable frame (prefer non-empty sources)
+  std::string chooseFrame() const {
+    if (last_conf_ && !last_conf_->poses.empty()) return last_conf_->header.frame_id;
+    if (last_all_  && !last_all_->poses.empty())  return last_all_->header.frame_id;
+    if (last_lock_ && !last_lock_->poses.empty()) return last_lock_->header.frame_id;
+    if (last_unm_  && !last_unm_->poses.empty())  return last_unm_->header.frame_id;
+    return "odom";
+  }
+
+  void publishCombined() {
+    const std::string frame = chooseFrame();
+    visualization_msgs::MarkerArray arr;
+    std::vector<geometry_msgs::Point> pts;
+
+    // ALL
+    if (last_all_ && !last_all_->poses.empty()) {
+      auto m = makeSphereList(0, cfg_.all.ns, frame, cfg_.all.sphere_diam, cfg_.all.r, cfg_.all.g, cfg_.all.b, cfg_.all.a);
+      posesToPoints(last_all_, cfg_.all.z_offset, pts); m.points.swap(pts);
+      arr.markers.push_back(m);
+    } else {
+      arr.markers.push_back(makeDelete(0, cfg_.all.ns, frame));
+    }
+
+    // CONFIRMED
+    if (last_conf_ && !last_conf_->poses.empty()) {
+      auto m = makeSphereList(1, cfg_.confirmed.ns, frame, cfg_.confirmed.sphere_diam, cfg_.confirmed.r, cfg_.confirmed.g, cfg_.confirmed.b, cfg_.confirmed.a);
+      posesToPoints(last_conf_, cfg_.confirmed.z_offset, pts); m.points.swap(pts);
+      arr.markers.push_back(m);
+    } else {
+      arr.markers.push_back(makeDelete(1, cfg_.confirmed.ns, frame));
+    }
+
+    // LOCKED
+    if (last_lock_ && !last_lock_->poses.empty()) {
+      auto m = makeSphereList(2, cfg_.locked.ns, frame, cfg_.locked.sphere_diam, cfg_.locked.r, cfg_.locked.g, cfg_.locked.b, cfg_.locked.a);
+      posesToPoints(last_lock_, cfg_.locked.z_offset, pts); m.points.swap(pts);
+      arr.markers.push_back(m);
+    } else {
+      arr.markers.push_back(makeDelete(2, cfg_.locked.ns, frame));
+    }
+
+    // UNMATCHED
+    if (last_unm_ && !last_unm_->poses.empty()) {
+      auto m = makeSphereList(3, cfg_.unmatched.ns, frame, cfg_.unmatched.sphere_diam, cfg_.unmatched.r, cfg_.unmatched.g, cfg_.unmatched.b, cfg_.unmatched.a);
+      posesToPoints(last_unm_, cfg_.unmatched.z_offset, pts); m.points.swap(pts);
+      arr.markers.push_back(m);
+    } else {
+      arr.markers.push_back(makeDelete(3, cfg_.unmatched.ns, frame));
+    }
+
+    pub_.publish(arr);
+  }
+
+  // Callbacks: store & publish
+  void cbAll (const geometry_msgs::PoseArray::ConstPtr& msg) { last_all_  = msg; publishCombined(); }
+  void cbConf(const geometry_msgs::PoseArray::ConstPtr& msg) { last_conf_ = msg; publishCombined(); }
+  void cbLock(const geometry_msgs::PoseArray::ConstPtr& msg) { last_lock_ = msg; publishCombined(); }
+  void cbUnm (const geometry_msgs::PoseArray::ConstPtr& msg) { last_unm_  = msg; publishCombined(); }
 };
 
 int main(int argc, char** argv) {
-  ros::init(argc, argv, "fastslam2_viz_node");
+  ros::init(argc, argv, "fastslam2_viz");
   ros::NodeHandle nh, pnh("~");
   FastSLAM2Viz node(nh, pnh);
   ros::spin();

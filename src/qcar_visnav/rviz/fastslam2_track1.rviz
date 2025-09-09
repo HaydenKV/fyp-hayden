@@ -7,7 +7,7 @@ Panels:
 Visualization Manager:
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: odom         # <-- was 'map'
+    Fixed Frame: odom
     Frame Rate: 30
 
   Displays:
@@ -34,28 +34,21 @@ Visualization Manager:
       Decay Time: 0
       Selectable: true
 
-    # RAW cones
+    # RAW cones (explicit)
     - Class: rviz/MarkerArray
       Name: Cones (RAW)
       Enabled: true
       Marker Topic: /cones_markers_raw
       Queue Size: 10
 
-    # TRACKED cones
+    # TRACKED cones (explicit)
     - Class: rviz/MarkerArray
       Name: Cones (TRACKED)
       Enabled: true
       Marker Topic: /cones_markers_tracked
       Queue Size: 10
 
-    # SLAM Particles (arrows)
-    - Class: rviz/MarkerArray
-      Name: SLAM Particles
-      Enabled: false
-      Marker Topic: /slam/particles
-      Queue Size: 10
-
-    # SLAM Particles PoseArray
+    # SLAM particles (PoseArray — spread)
     - Class: rviz/PoseArray
       Name: SLAM Particle Poses
       Enabled: true
@@ -64,14 +57,52 @@ Visualization Manager:
       Color: 255; 0; 0
       Arrow Length: 0.3
 
-    # SLAM Landmarks (best particle)
+    # --- SLAM layers (single topic; filter by namespace) ---
     - Class: rviz/MarkerArray
-      Name: SLAM Landmarks
+      Name: SLAM Landmarks (ALL)
       Enabled: true
       Marker Topic: /slam/map_markers
       Queue Size: 10
+      Namespaces:
+        landmarks_all: true
+        landmarks_confirmed: false
+        landmarks_locked: false
+        landmarks_unmatched: false
 
-    # SLAM Odom (best)
+    - Class: rviz/MarkerArray
+      Name: SLAM Landmarks (CONFIRMED)
+      Enabled: true
+      Marker Topic: /slam/map_markers
+      Queue Size: 10
+      Namespaces:
+        landmarks_all: false
+        landmarks_confirmed: true
+        landmarks_locked: false
+        landmarks_unmatched: false
+
+    - Class: rviz/MarkerArray
+      Name: SLAM Landmarks (LOCKED)
+      Enabled: true
+      Marker Topic: /slam/map_markers
+      Queue Size: 10
+      Namespaces:
+        landmarks_all: false
+        landmarks_confirmed: false
+        landmarks_locked: true
+        landmarks_unmatched: false
+
+    - Class: rviz/MarkerArray
+      Name: SLAM Landmarks (UNMATCHED)
+      Enabled: true
+      Marker Topic: /slam/map_markers
+      Queue Size: 10
+      Namespaces:
+        landmarks_all: false
+        landmarks_confirmed: false
+        landmarks_locked: false
+        landmarks_unmatched: true
+
+    # SLAM odometry
     - Class: rviz/Odometry
       Name: SLAM Odom (best)
       Enabled: true
@@ -81,7 +112,6 @@ Visualization Manager:
       Color: 0; 255; 0
       Alpha: 0.5
 
-    # SLAM Odom (mean)
     - Class: rviz/Odometry
       Name: SLAM Odom (mean)
       Enabled: false
@@ -97,18 +127,18 @@ Visualization Manager:
       Color: 160; 160; 160
       Alpha: 0.5
 
+  Views:
+    Current:
+      Class: rviz/TopDownOrtho
+      Name: TopDown
+      Target Frame: odom
+      Angle: 0
+      Scale: 80
+      X: 0
+      Y: 0
+
   Tools:
     - Class: rviz/Interact
     - Class: rviz/MoveCamera
     - Class: rviz/Select
     - Class: rviz/Measure
-
-  Views:
-    Current:
-      Class: rviz/TopDownOrtho
-      Name: TopDown
-      Target Frame: odom      # <-- was 'map'
-      Angle: 0
-      Scale: 80
-      X: 0
-      Y: 0

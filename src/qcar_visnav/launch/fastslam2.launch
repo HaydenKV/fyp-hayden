@@ -22,13 +22,11 @@
 
   <!-- FastSLAM 2.0 core -->
   <node pkg="qcar_visnav" type="slam_node" name="fastslam2" output="screen">
-    <!-- node-private params -->
     <rosparam command="load" file="$(find qcar_visnav)/config/fastslam2.yaml"/>
   </node>
 
-  <!-- FastSLAM viz (blue cones etc.) -->
+  <!-- FastSLAM viz (combined SPHERE_LIST layers on /slam/map_markers) -->
   <node pkg="qcar_visnav" type="fastslam2_viz_node" name="fastslam2_viz" output="screen">
-    <!-- node-private params -->
     <rosparam command="load" file="$(find qcar_visnav)/config/fastslam2.yaml"/>
   </node>
 
