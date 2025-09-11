@@ -1,3 +1,80 @@
+/* =====================================================================================
+   FastSLAM 2.0
+   =====================================================================================
+
+   INPUTS (ROS)
+   ------------
+   • Odometry: nav_msgs/Odometry from either /odom or /qcar/ekf/odom
+   • Tracked cones: qcar_visnav::ConeArray on /tracked_cones (range, bearing, variances, id)
+   • TF: transform from base_frame → lidar_frame at measurement time
+   • YAML params: frames, topics, PF sizes, noises, association mode, proposal knobs, etc.
+
+   OUTPUTS (ROS)
+   -------------
+   • /slam/particles_pose          : geometry_msgs::PoseArray of all particles
+   • /slam/landmarks_pose          : PoseArray of all landmarks (best particle)
+   • /slam/landmarks_pose_confirmed: PoseArray of confirmed landmarks
+   • /slam/landmarks_pose_locked   : PoseArray of “locked” landmarks
+   • /slam/unmatched_pose          : PoseArray of current frame’s unmatched detections (world)
+   • /slam/odom                    : nav_msgs::Odometry (best particle pose)
+   • /slam/odom_mean               : nav_msgs::Odometry (weight-averaged mean pose)
+
+   PIPELINE (frame-by-frame)
+   -------------------------
+   1) Initialization
+      - Load YAML (frames, topics, particle count, motion/measurement noise, DA mode, pose-proposal).
+      - Seed particles near initial pose (or on first odom) with Gaussian spread.
+   2) Odometry ingestion & propagation
+      - Buffer body-frame twist samples (vx, vy, r, stamp) in a rolling window.
+      - For a measurement at time t, interpolate twists and propagate every particle
+        from last processed stamp → t with the motion model.
+   3) Measurement callback (/tracked_cones)
+      - Look up lidar extrinsics (x, y, yaw of lidar in base) from TF at the frame stamp.
+      - Build a vector of range–bearing measurements {r, b, r_var, b_var, id}.
+   4) Pose proposal (FastSLAM 2.0) — optional
+      - For each particle:
+        • Build provisional associations via either ID or nearest-neighbor in RB.
+        • For each tentative match compute innovation ν and S = H Σ Hᵀ + R.
+        • Keep top-K (lowest Mahalanobis d² = νᵀ S^{-1} ν) matches.
+        • Linearize measurement wrt pose (finite differences) to get Hx.
+        • Form information update:
+              Q_prior = diag(σ_x², σ_y², σ_yaw²) * max(dt, min_dt) * prior_scale
+              Λ = Q_prior^{-1} + Σ Hxᵀ S^{-1} Hx
+              η = Σ Hxᵀ S^{-1} ν
+          Solve δx = Λ^{-1} η (LDLT) and apply a clamped Gauss–Newton pose step.
+   5) Landmark EKF + particle reweighting
+      - For each measurement:
+        • Associate (ID or NN in RB) with χ²(2) gate on d² = νᵀ S^{-1} ν.
+        • If matched: accumulate exact log-likelihood
+              log p(z|·) = −½(νᵀ S^{-1} ν + log|2π S|)
+          and EKF-update landmark:
+              K = Σ Hᵀ S^{-1}
+              μ ← μ + K ν
+              Σ ← (I − K H) Σ
+          Track hits/confirmation/lock states.
+        • If unmatched: birth a new landmark at world-projected (r, b) with covariance
+              Σ_birth = J R Jᵀ + init_var·I
+   6) Weight normalization & resampling
+      - Convert log_w → w stably by subtracting max log_w, normalize.
+      - Compute N_eff = 1 / Σ w_i²; if below threshold, systematic resample.
+   7) Best/mean pose & publish
+      - Best = argmax_i w_i; mean pose uses circular mean for yaw.
+      - Publish particles, landmarks (all/confirmed/locked), unmatched (world), odom(best), odom(mean).
+
+   YAML KEYS (mapping to code)
+   ---------------------------
+   frames.*                         : frame names for TF & publishing
+   odometry.use_ekf / topics        : odom source selection
+   particles, resample_neff_ratio   : PF size & resampling sensitivity
+   motion_noise.{sigma_x,y,yaw}     : pose prior σ; used to build Q_prior
+   association.{mode, chi2_gate_rb} : DA policy & χ² gate (e.g., 3.91=95%, 5.99=99%)
+   landmarks.{init_var, confirm_hits, lock_hits, lock_cov_trace}
+   pose_proposal.{enable, Kmax, eps_fd, clamp_dx, clamp_dy, clamp_dyaw, min_dt, prior_scale}
+   seed_from_params, init.*, initial_spread.*, odom_buffer_window_sec
+
+   ===================================================================================== */
+
+
 #include "qcar_visnav/slam/fastslam2.h"
 
 #include <algorithm>
@@ -18,13 +95,27 @@ using namespace qcar_visnav::slam;
 // ================== file-local helpers ==================
 namespace {
 
+/* -----------------------------------------------------------------------------
+wrapPi
+WHAT: Normalize an angle to (-π, π].
+WHY:  Keep bearings and yaws numerically stable and compatible with χ² gates and
+      EKF linearizations.
+HOW:  Repeatedly add/subtract 2π until inside the principal interval.
+----------------------------------------------------------------------------- */
 inline double wrapPi(double a) {
   while (a >  M_PI) a -= 2*M_PI;
   while (a < -M_PI) a += 2*M_PI;
   return a;
 }
 
-// Associate by tracker ID; returns -1 if no match
+/* -----------------------------------------------------------------------------
+associateById
+WHAT:  Associate a measurement to an existing landmark by persistent tracker ID.
+WHY:   Upstream tracker gives high-quality IDs; direct association is cheap and
+       robust if IDs are valid.
+HOW:   Linear scan over particle's landmarks and return index with matching id;
+       -1 if not found. (A χ² gate is still applied later before using it.)
+----------------------------------------------------------------------------- */
 inline int associateById(const Particle& p, const MeasRB& m) {
   if (m.id <= 0) return -1;
   for (int i = 0; i < (int)p.map.size(); ++i) {
@@ -33,7 +124,16 @@ inline int associateById(const Particle& p, const MeasRB& m) {
   return -1;
 }
 
-// Nearest-neighbor in RB space with chi^2(2) gate; returns -1 if no valid match
+/* -----------------------------------------------------------------------------
+associateByNNRB
+WHAT:  Nearest-neighbor data association in Range-Bearing space with a χ²(2) gate.
+WHY:   Fallback when IDs are missing/incorrect; uses geometry + uncertainty.
+HOW:   For each landmark:
+        - Predict measurement h(x) = [r̂, b̂], compute innovation ν and S = H Σ Hᵀ + R.
+        - Compute Mahalanobis d² = νᵀ S^{-1} ν.
+       Keep the landmark with the smallest d² and accept if d² <= χ² gate; else -1.
+NOTE:  Uses S^{-1} (not R^{-1}) so landmark uncertainty is respected.
+----------------------------------------------------------------------------- */
 inline int associateByNNRB(const Particle& p,
                            const MeasRB& m,
                            const LidarExtrinsics& ex,
@@ -68,7 +168,13 @@ inline int associateByNNRB(const Particle& p,
   return -1;
 }
 
-// log N(x|mu,Sigma) helper (kept for completeness)
+/* -----------------------------------------------------------------------------
+logGaussian
+WHAT:  Log pdf of a multivariate Gaussian N(x | μ, Σ). Kept for completeness /
+       debugging / potential scoring.
+WHY:   Sometimes useful to inspect likelihoods explicitly.
+HOW:   Cholesky on Σ for log|Σ| and solve for the quadratic form.
+----------------------------------------------------------------------------- */
 inline double logGaussian(const Eigen::VectorXd& x,
                           const Eigen::VectorXd& mu,
                           const Eigen::MatrixXd& Sigma)
@@ -90,7 +196,13 @@ inline double logGaussian(const Eigen::VectorXd& x,
   return -0.5 * (quad + logdet + d * std::log(2.0 * M_PI));
 }
 
-// --- Pose-proposal (FS2.0) tunables loaded from YAML ---
+/* -----------------------------------------------------------------------------
+PosePropCfg (YAML)
+WHAT:  Tunables for the FastSLAM 2.0 pose-proposal step.
+WHY:   Control how aggressively the proposal uses measurement information and
+       how the prior Q is built from motion noise and dt.
+HOW:   Parameters are loaded via pnh.param(...) in the constructor.
+----------------------------------------------------------------------------- */
 struct PosePropCfg {
   bool   enable      = true;   // ~pose_proposal/enable
   int    Kmax        = 6;      // ~pose_proposal/Kmax
@@ -105,6 +217,16 @@ struct PosePropCfg {
 } // anon
 
 // ================== ctor ==================
+/* -----------------------------------------------------------------------------
+FastSLAM2::FastSLAM2
+WHAT:  Node setup & parameterization.
+WHY:   Centralize configuration (frames, topics, particle count/noise, DA mode,
+       landmark policy, proposal knobs), allocate particle set, wire ROS I/O.
+HOW:
+  - Load YAML params (frames, odom source, PF params, noises, association, etc.).
+  - Initialize particles (either from params or first odom).
+  - Advertise PoseArrays/Odometry; subscribe to odom & tracked cones.
+----------------------------------------------------------------------------- */
 FastSLAM2::FastSLAM2(ros::NodeHandle& nh, ros::NodeHandle& pnh)
   : tfl_(tfbuf_), motion_(MotionNoise())
 {
@@ -198,6 +320,13 @@ FastSLAM2::FastSLAM2(ros::NodeHandle& nh, ros::NodeHandle& pnh)
 }
 
 // ================== init ==================
+/* -----------------------------------------------------------------------------
+initializeParticlesFrom
+WHAT:  Seed particle states around a given mean pose with Gaussian spread.
+WHY:   Provide initial diversity so the PF can converge even if the prior mean
+       is imperfect.
+HOW:   Sample x,y,yaw with provided stddevs (sx,sy,syaw). Reset book-keeping.
+----------------------------------------------------------------------------- */
 void FastSLAM2::initializeParticlesFrom(double x, double y, double yaw,
                                         double sx, double sy, double syaw)
 {
@@ -216,9 +345,20 @@ void FastSLAM2::initializeParticlesFrom(double x, double y, double yaw,
   mean_x_ = x; mean_y_ = y; mean_yaw_ = yaw;
 }
 
+/* -----------------------------------------------------------------------------
+spinOnce
+WHAT/WHY/HOW: Placeholder; no periodic work needed outside callbacks in this node.
+----------------------------------------------------------------------------- */
 void FastSLAM2::spinOnce() {}
 
 // ================== odom ==================
+/* -----------------------------------------------------------------------------
+cbOdom
+WHAT:  Consume odometry/EKF odom, optionally snap-initialize particles, and append
+       twist samples to a bounded buffer.
+WHY:   We later time-align propagation to measurement stamps using this buffer.
+HOW:   Store (vx,vy,r, t). Keep only a recent window per odom_buffer_window_sec.
+----------------------------------------------------------------------------- */
 void FastSLAM2::cbOdom(const nav_msgs::Odometry::ConstPtr& msg) {
   if (!snapped_to_first_odom_ && overwrite_with_odom_on_first_msg_) {
     const auto& p = msg->pose.pose.position;
@@ -246,6 +386,12 @@ void FastSLAM2::cbOdom(const nav_msgs::Odometry::ConstPtr& msg) {
   }
 }
 
+/* -----------------------------------------------------------------------------
+interpTwist
+WHAT:  Linearly interpolate body-frame twist between two odom samples at time s.
+WHY:   Gives smooth per-segment propagation matching measurement time stamps.
+HOW:   Linear blend of vx and r; vy is taken from 'a' (as per source code intent).
+----------------------------------------------------------------------------- */
 FastSLAM2::OdomStamped
 FastSLAM2::interpTwist(const OdomStamped& a,
                        const OdomStamped& b,
@@ -262,6 +408,15 @@ FastSLAM2::interpTwist(const OdomStamped& a,
   return result;
 }
 
+/* -----------------------------------------------------------------------------
+propagateParticlesTo
+WHAT:  Advance each particle from the last processed time to t using the buffered
+       odometry, with piecewise-constant (interpolated endpoints) twists.
+WHY:   Ensures motion model propagation is time-aligned to sensor frames.
+HOW:   For each buffered segment overlapping (last_prop_stamp_, t]:
+        - Interpolate twists at segment endpoints
+        - Average them and integrate dt via MotionModel::propagate
+----------------------------------------------------------------------------- */
 void FastSLAM2::propagateParticlesTo(const ros::Time& t) {
   if (!particles_initialized_ || odom_buf_.size() < 2) return;
   if (last_prop_stamp_.isZero()) last_prop_stamp_ = odom_buf_.front().t;
@@ -290,6 +445,12 @@ void FastSLAM2::propagateParticlesTo(const ros::Time& t) {
 }
 
 // ================== cones ==================
+/* -----------------------------------------------------------------------------
+lookupLidarExtrinsics
+WHAT:  Query TF at time t for lidar pose relative to base: (x,y,yaw).
+WHY:   Corrects measurement geometry/Jacobians for sensor offsets to avoid bias.
+HOW:   tf2 buffer lookupTransform(base_frame, lidar_frame, t), convert to yaw.
+----------------------------------------------------------------------------- */
 bool FastSLAM2::lookupLidarExtrinsics(const ros::Time& t, LidarExtrinsics& ex) const {
   try {
     const auto T = tfbuf_.lookupTransform(base_frame_, lidar_frame_, t, ros::Duration(0.05));
@@ -308,6 +469,20 @@ bool FastSLAM2::lookupLidarExtrinsics(const ros::Time& t, LidarExtrinsics& ex) c
   }
 }
 
+/* -----------------------------------------------------------------------------
+cbCones
+WHAT:  Measurement callback for tracked cones. Propagate to stamp, fetch
+       extrinsics, convert to RB measurements, run the core update, compute
+       unmatched positions for viz, and publish outputs.
+WHY:   Central per-frame entry point that aligns motion & measurement processing.
+HOW:
+  - propagateParticlesTo(msg->header.stamp)
+  - lookupLidarExtrinsics
+  - build MeasRB array from ConeArray (range/bearing/variances/id)
+  - processMeasurementsAt(...) -> FS2.0 + EKF + weights + resample + best/mean
+  - project unmatched detections to world (best particle) for visualization
+  - publishCoreOutputs
+----------------------------------------------------------------------------- */
 void FastSLAM2::cbCones(const qcar_visnav::ConeArray::ConstPtr& msg) {
   if (!particles_initialized_) {
     ROS_WARN_THROTTLE(2.0, "[FastSLAM2] Cones before particles init; ignoring");
@@ -353,6 +528,29 @@ void FastSLAM2::cbCones(const qcar_visnav::ConeArray::ConstPtr& msg) {
 }
 
 // ================== core update ==================
+/* -----------------------------------------------------------------------------
+processMeasurementsAt
+WHAT:  Core per-frame SLAM step: (A) optional FastSLAM 2.0 pose-proposal,
+       (B) landmark EKF updates + particle reweighting, (C) normalization,
+       resampling, and best/mean pose extraction.
+WHY:   Implements Rao–Blackwellized FastSLAM with a measurement-aware proposal.
+HOW (A) Pose proposal (if enabled):
+       - Build provisional matches for each measurement (ID or NN in RB with χ² gate).
+       - Keep top-K by Mahalanobis distance (d²).
+       - Build pose posterior information:
+           Q = diag(σ²) * max(dt, min_dt) * prior_scale
+           Λ = Q^{-1} + Σ Hxᵀ S^{-1} Hx
+           η = Σ Hxᵀ S^{-1} ν
+         Solve δx = Λ^{-1} η and apply (with small safety clamps).
+     (B) Landmark EKF & log-likelihood:
+       - For each meas: (associate, gate with S), compute ν and S, accumulate
+         log p(z|.) = −½(νᵀ S^{-1} ν + log|2πS|), and EKF-update matched landmark.
+       - If unmatched: birth new landmark with Σ_new = J R Jᵀ + init_var I.
+     (C) Weights & resampling:
+       - Softmax log_w, normalize; resample if N_eff below threshold.
+       - Track best (argmax w) and compute mean pose (circular for yaw).
+NOTE:  All weighting uses S^{-1} (not R^{-1}) to honor landmark uncertainty.
+----------------------------------------------------------------------------- */
 void FastSLAM2::processMeasurementsAt(const ros::Time& t,
                                       const std::vector<MeasRB>& meas_vec,
                                       const LidarExtrinsics& ex)
@@ -468,7 +666,7 @@ void FastSLAM2::processMeasurementsAt(const ros::Time& t,
         Eigen::LDLT<Eigen::Matrix3d> ldlt(Lambda);
         if (ldlt.info() == Eigen::Success) {
           const Eigen::Vector3d dxi = ldlt.solve(eta);
-          // clamp for safety
+          // Safety clamps on the GN pose step (tunable in YAML).
           const double dx   = std::max(-PPC.clamp_dx,   std::min(PPC.clamp_dx,   dxi(0)));
           const double dy   = std::max(-PPC.clamp_dy,   std::min(PPC.clamp_dy,   dxi(1)));
           const double dyaw = std::max(-PPC.clamp_dyaw, std::min(PPC.clamp_dyaw, dxi(2)));
@@ -618,6 +816,13 @@ void FastSLAM2::processMeasurementsAt(const ros::Time& t,
 
 
 // (optional) measurement log-likelihood
+/* -----------------------------------------------------------------------------
+measLogLikelihood
+WHAT:  Compute log p(z | particle pose, landmark) using innovation ν and S.
+WHY:   Useful for diagnostics or alternative weighting strategies.
+HOW:   Cholesky on S for log|S| and solve for νᵀ S^{-1} ν; return Gaussian logpdf.
+NOTE:  This uses S = H Σ Hᵀ + R consistent with the rest of the pipeline.
+----------------------------------------------------------------------------- */
 double FastSLAM2::measLogLikelihood(const Landmark& lm,
                                     const Particle& p,
                                     const MeasRB& m,
@@ -646,6 +851,17 @@ double FastSLAM2::measLogLikelihood(const Landmark& lm,
 }
 
 // ================== publish outputs ==================
+/* -----------------------------------------------------------------------------
+publishCoreOutputs
+WHAT:  Publish particles, landmarks (all / confirmed / locked), unmatched current
+       detections (world-projected), and odom (best & mean).
+WHY:   Lightweight visualization and downstream consumption.
+HOW:
+  - PoseArray of particle states in map_frame
+  - PoseArray of landmarks for the best particle (all/confirmed/locked subsets)
+  - PoseArray of unmatched projected positions (this frame)
+  - Odometry messages for best and mean particle poses
+----------------------------------------------------------------------------- */
 void FastSLAM2::publishCoreOutputs(const ros::Time& t,
                                    const std::vector<Eigen::Vector2d>& unmatched_world)
 {
