@@ -9,7 +9,7 @@ frames:
   lidar_frame: "lidar"
 
 odometry:
-  use_ekf: false
+  use_ekf: true
   truth_topic: "/odom"
   ekf_topic: "/qcar/ekf/odom"
 
@@ -21,9 +21,9 @@ init:
   y: 3.0
   yaw: -3.14
 initial_spread:
-  x: 0.03
-  y: 0.03
-  yaw: 0.05
+  x: 0.06
+  y: 0.06
+  yaw: 0.015
 odom_buffer_window_sec: 2.0
 
 # Particle filter
@@ -43,10 +43,10 @@ association:
 
 # Landmark behavior
 landmarks:
-  init_var: 0.15
-  confirm_hits: 2
-  lock_hits: 6
-  lock_cov_trace: 0.02
+  init_var: 0.30
+  confirm_hits: 3
+  lock_hits: 15
+  lock_cov_trace: 0.01
 
 # --- Visualization (minimal & fast — single combined topic with namespaces) ---
 visualization:
@@ -54,24 +54,24 @@ visualization:
 
   all:
     ns: landmarks_all
-    sphere_diam: 0.18
-    z_offset: 0.05
+    sphere_diam: 0.1
+    z_offset: 0.1
     rgba: [1.0, 0.5, 0.0, 1.0]     # orange
 
   confirmed:
     ns: landmarks_confirmed
-    sphere_diam: 0.18
-    z_offset: 0.05
+    sphere_diam: 0.15
+    z_offset: 0.1
     rgba: [0.0, 0.0, 1.0, 1.0]     # blue
 
   locked:
     ns: landmarks_locked
-    sphere_diam: 0.18
+    sphere_diam: 0.2
     z_offset: 0.05
     rgba: [0.0, 1.0, 1.0, 1.0]     # cyan
 
   unmatched:
     ns: landmarks_unmatched
-    sphere_diam: 0.16
-    z_offset: 0.05
+    sphere_diam: 0.1
+    z_offset: 0.1
     rgba: [1.0, 0.0, 0.0, 1.0]     # red
