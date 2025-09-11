@@ -102,7 +102,6 @@ struct PosePropCfg {
   double prior_scale = 1.0;    // ~pose_proposal/prior_scale multiplier on Q_prior
 } PPC;
 
-
 } // anon
 
 // ================== ctor ==================
@@ -157,7 +156,6 @@ FastSLAM2::FastSLAM2(ros::NodeHandle& nh, ros::NodeHandle& pnh)
   pnh.param("pose_proposal/clamp_dyaw",  PPC.clamp_dyaw,  PPC.clamp_dyaw);
   pnh.param("pose_proposal/min_dt",      PPC.min_dt,      PPC.min_dt);
   pnh.param("pose_proposal/prior_scale", PPC.prior_scale, PPC.prior_scale);
-
 
   // Init
   pnh.param("seed_from_params", seed_from_params_, true);
@@ -372,115 +370,116 @@ void FastSLAM2::processMeasurementsAt(const ros::Time& t,
       dt_Q = std::max(PPC.min_dt, (b.t - a.t).toSec());
     }
 
-    Eigen::Matrix3d Q_prior = (Eigen::Vector3d(
-        motion_noise_.sigma_x * motion_noise_.sigma_x,
-        motion_noise_.sigma_y * motion_noise_.sigma_y,
-        motion_noise_.sigma_yaw * motion_noise_.sigma_yaw) * dt_Q
-      ).asDiagonal();
+    Eigen::Vector3d qv(
+      motion_noise_.sigma_x   * motion_noise_.sigma_x,
+      motion_noise_.sigma_y   * motion_noise_.sigma_y,
+      motion_noise_.sigma_yaw * motion_noise_.sigma_yaw
+    );
+    Eigen::Matrix3d Q_prior = qv.asDiagonal() * dt_Q * PPC.prior_scale;
 
-    Q_prior *= PPC.prior_scale;  // soften/strengthen the prior if desired
+    for (auto& p : P_) {
+      // --- 1) Build provisional associations and scores (d2) ---
+      struct Match {
+        int lidx;               // landmark index
+        int midx;               // measurement index
+        double d2;              // Mahalanobis distance
+        Eigen::Vector2d nu;     // innovation (wrapped)
+        Eigen::Matrix2d Sinv;   // (H Σ H^T + R)^{-1}
+      };
+      std::vector<Match> matches; matches.reserve(meas_vec.size());
 
+      for (int mi = 0; mi < (int)meas_vec.size(); ++mi) {
+        const auto& m = meas_vec[mi];
+        int lidx = -1;
 
-  for (auto& p : P_) {
-    // --- 1) Build provisional associations and scores (d2) ---
-    struct Match { int lidx; int midx; double d2; Eigen::Vector2d nu; Eigen::Matrix2d R; };
-    std::vector<Match> matches; matches.reserve(meas_vec.size());
+        if (assoc_mode_ == "id") {
+          lidx = associateById(p, m);
+          if (lidx >= 0) {
+            const auto& lm = p.map[lidx];
+            Eigen::Matrix2d R = Eigen::Matrix2d::Zero();
+            R(0,0) = std::max(1e-10, m.r_var);
+            R(1,1) = std::max(1e-12, m.b_var);
 
-    for (int mi = 0; mi < (int)meas_vec.size(); ++mi) {
-      const auto& m = meas_vec[mi];
-      int lidx = -1;
-
-      if (assoc_mode_ == "id") {
-        lidx = associateById(p, m);
-        if (lidx >= 0) {
-          // gate the ID match using chi2 like NN does
-          const auto& lm = p.map[lidx];
-          Eigen::Matrix2d R = Eigen::Matrix2d::Zero();
-          R(0,0) = std::max(1e-10, m.r_var);
-          R(1,1) = std::max(1e-12, m.b_var);
-
-          double r_h=0, b_h=0; Eigen::Matrix2d Hlm;
-          predictMeasurementRB(p.x, p.y, p.yaw, lm.mu, ex, r_h, b_h, Hlm);
-          Eigen::Vector2d nu; nu << (m.r - r_h), wrapPi(m.b - b_h);
-          const Eigen::Matrix2d S = Hlm * lm.Sigma * Hlm.transpose() + R;
-          Eigen::LLT<Eigen::Matrix2d> llt(S);
-          if (llt.info() == Eigen::Success) {
-            const Eigen::Matrix2d Sinv = llt.solve(Eigen::Matrix2d::Identity());
-            const double d2 = (nu.transpose() * Sinv * nu)(0,0);
-            if (d2 <= chi2_gate_rb_) {
-              matches.push_back({lidx, mi, d2, nu, R});
+            double r_h=0, b_h=0; Eigen::Matrix2d Hlm;
+            predictMeasurementRB(p.x, p.y, p.yaw, lm.mu, ex, r_h, b_h, Hlm);
+            Eigen::Vector2d nu; nu << (m.r - r_h), wrapPi(m.b - b_h);
+            const Eigen::Matrix2d S = Hlm * lm.Sigma * Hlm.transpose() + R;
+            Eigen::LLT<Eigen::Matrix2d> llt(S);
+            if (llt.info() == Eigen::Success) {
+              const Eigen::Matrix2d Sinv = llt.solve(Eigen::Matrix2d::Identity());
+              const double d2 = (nu.transpose() * Sinv * nu)(0,0);
+              if (d2 <= chi2_gate_rb_) {
+                matches.push_back({lidx, mi, d2, nu, Sinv});
+              }
+            }
+          }
+        } else {
+          lidx = associateByNNRB(p, m, ex, chi2_gate_rb_);
+          if (lidx >= 0) {
+            const auto& lm = p.map[lidx];
+            Eigen::Matrix2d R = Eigen::Matrix2d::Zero();
+            R(0,0) = std::max(1e-10, m.r_var);
+            R(1,1) = std::max(1e-12, m.b_var);
+            double r_h=0, b_h=0; Eigen::Matrix2d Hlm;
+            predictMeasurementRB(p.x, p.y, p.yaw, lm.mu, ex, r_h, b_h, Hlm);
+            Eigen::Vector2d nu; nu << (m.r - r_h), wrapPi(m.b - b_h);
+            const Eigen::Matrix2d S = Hlm * lm.Sigma * Hlm.transpose() + R;
+            Eigen::LLT<Eigen::Matrix2d> llt(S);
+            if (llt.info() == Eigen::Success) {
+              const Eigen::Matrix2d Sinv = llt.solve(Eigen::Matrix2d::Identity());
+              const double d2 = (nu.transpose() * Sinv * nu)(0,0);
+              matches.push_back({lidx, mi, d2, nu, Sinv});
             }
           }
         }
-      } else {
-        lidx = associateByNNRB(p, m, ex, chi2_gate_rb_);
-        if (lidx >= 0) {
-          const auto& lm = p.map[lidx];
-          Eigen::Matrix2d R = Eigen::Matrix2d::Zero();
-          R(0,0) = std::max(1e-10, m.r_var);
-          R(1,1) = std::max(1e-12, m.b_var);
-          double r_h=0, b_h=0; Eigen::Matrix2d Hlm;
-          predictMeasurementRB(p.x, p.y, p.yaw, lm.mu, ex, r_h, b_h, Hlm);
-          Eigen::Vector2d nu; nu << (m.r - r_h), wrapPi(m.b - b_h);
-          // Recompute d2 for sorting (associateByNN already gated)
-          const Eigen::Matrix2d S = Hlm * lm.Sigma * Hlm.transpose() + R;
-          Eigen::LLT<Eigen::Matrix2d> llt(S);
-          if (llt.info() == Eigen::Success) {
-            const Eigen::Matrix2d Sinv = llt.solve(Eigen::Matrix2d::Identity());
-            const double d2 = (nu.transpose() * Sinv * nu)(0,0);
-            matches.push_back({lidx, mi, d2, nu, R});
-          }
+      }
+
+      if (!matches.empty()) {
+        // --- 2) pick up to K best by Mahalanobis distance ---
+        std::sort(matches.begin(), matches.end(),
+                  [](const Match& a, const Match& b){ return a.d2 < b.d2; });
+        if ((int)matches.size() > Kmax) matches.resize(Kmax);
+
+        // --- 3) Build pose posterior info and take one Gauss–Newton step ---
+        Eigen::Matrix3d Lambda = Q_prior.inverse();
+        Eigen::Vector3d eta    = Eigen::Vector3d::Zero();
+
+        for (const auto& mrec : matches) {
+          const auto& lm = p.map[mrec.lidx];
+
+          auto h = [&](double X, double Y, double Yaw){
+            double r=0, b=0; Eigen::Matrix2d H_unused;
+            predictMeasurementRB(X, Y, Yaw, lm.mu, ex, r, b, H_unused);
+            return Eigen::Vector2d(r,b);
+          };
+
+          const Eigen::Vector2d h0 = h(p.x, p.y, p.yaw);
+          Eigen::Matrix<double,2,3> Hx;
+          Hx.col(0) = (h(p.x+epsFD, p.y,       p.yaw     ) - h0) / epsFD;
+          Hx.col(1) = (h(p.x,       p.y+epsFD, p.yaw     ) - h0) / epsFD;
+          Hx.col(2) = (h(p.x,       p.y,       p.yaw+epsFD) - h0) / epsFD;
+
+          // Weight by S^{-1} (landmark + measurement uncertainty)
+          const Eigen::Matrix2d& W = mrec.Sinv;
+          Lambda += Hx.transpose() * W * Hx;
+          eta    += Hx.transpose() * W * mrec.nu;
+        }
+
+        Eigen::LDLT<Eigen::Matrix3d> ldlt(Lambda);
+        if (ldlt.info() == Eigen::Success) {
+          const Eigen::Vector3d dxi = ldlt.solve(eta);
+          // clamp for safety
+          const double dx   = std::max(-PPC.clamp_dx,   std::min(PPC.clamp_dx,   dxi(0)));
+          const double dy   = std::max(-PPC.clamp_dy,   std::min(PPC.clamp_dy,   dxi(1)));
+          const double dyaw = std::max(-PPC.clamp_dyaw, std::min(PPC.clamp_dyaw, dxi(2)));
+
+          p.x   += dx;
+          p.y   += dy;
+          p.yaw  = wrapPi(p.yaw + dyaw);
         }
       }
-    }
-
-    if (!matches.empty()) {
-      // --- 2) pick up to K best by Mahalanobis distance ---
-      std::sort(matches.begin(), matches.end(),
-                [](const Match& a, const Match& b){ return a.d2 < b.d2; });
-      if ((int)matches.size() > Kmax) matches.resize(Kmax);
-
-      // --- 3) Build pose posterior info and take one Gauss–Newton step ---
-      Eigen::Matrix3d Lambda = Q_prior.inverse();
-      Eigen::Vector3d eta    = Eigen::Vector3d::Zero();
-
-      for (const auto& mrec : matches) {
-        const auto& lm = p.map[mrec.lidx];
-
-        auto h = [&](double X, double Y, double Yaw){
-          double r=0, b=0; Eigen::Matrix2d H_unused;
-          predictMeasurementRB(X, Y, Yaw, lm.mu, ex, r, b, H_unused);
-          return Eigen::Vector2d(r,b);
-        };
-
-        const Eigen::Vector2d h0 = h(p.x, p.y, p.yaw);
-        Eigen::Matrix<double,2,3> Hx;
-        Hx.col(0) = (h(p.x+epsFD, p.y,       p.yaw     ) - h0) / epsFD;
-        Hx.col(1) = (h(p.x,       p.y+epsFD, p.yaw     ) - h0) / epsFD;
-        Hx.col(2) = (h(p.x,       p.y,       p.yaw+epsFD) - h0) / epsFD;
-
-        // Use saved innovation (wrapped) and R
-        const Eigen::Matrix2d Rinv = mrec.R.inverse();
-        Lambda += Hx.transpose() * Rinv * Hx;
-        eta    += Hx.transpose() * Rinv * mrec.nu;
-      }
-
-      Eigen::LDLT<Eigen::Matrix3d> ldlt(Lambda);
-      if (ldlt.info() == Eigen::Success) {
-        const Eigen::Vector3d dxi = ldlt.solve(eta);
-        // clamp for safety
-        const double dx   = std::max(-PPC.clamp_dx,   std::min(PPC.clamp_dx,   dxi(0)));
-        const double dy   = std::max(-PPC.clamp_dy,   std::min(PPC.clamp_dy,   dxi(1)));
-        const double dyaw = std::max(-PPC.clamp_dyaw, std::min(PPC.clamp_dyaw, dxi(2)));
-
-
-        p.x   += dx;
-        p.y   += dy;
-        p.yaw  = wrapPi(p.yaw + dyaw);
-      }
-    }
-  } // end pose proposal loop
-}
+    } // end pose proposal loop
+  }
 
   // === Landmark EKF updates + log-likelihood accumulation (original) ===
   for (auto& p : P_) {
