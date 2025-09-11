@@ -4,6 +4,7 @@
 #include <cmath>
 #include <random>
 #include <limits>
+#include <utility>
 #include <Eigen/Dense>
 
 #include <tf2/LinearMath/Quaternion.h>
@@ -30,41 +31,6 @@ inline int associateById(const Particle& p, const MeasRB& m) {
   for (int i = 0; i < (int)p.map.size(); ++i) {
     if (p.map[i].id == m.id) return i;
   }
-  return -1;
-}
-
-// Nearest-neighbor in RB space with chi^2(2) gate; returns -1 if no valid match
-inline int associateByNNRB(const Particle& p,
-                           const MeasRB& m,
-                           const LidarExtrinsics& ex,
-                           double chi2_gate_rb)
-{
-  int best = -1;
-  double best_d2 = std::numeric_limits<double>::infinity();
-
-  Eigen::Matrix2d R = Eigen::Matrix2d::Zero();
-  R(0,0) = std::max(1e-10, m.r_var);
-  R(1,1) = std::max(1e-12, m.b_var);
-
-  for (int i = 0; i < (int)p.map.size(); ++i) {
-    const auto& lm = p.map[i];
-
-    double r_hat=0, b_hat=0; Eigen::Matrix2d H;
-    predictMeasurementRB(p.x, p.y, p.yaw, lm.mu, ex, r_hat, b_hat, H);
-
-    Eigen::Vector2d nu; nu << (m.r - r_hat), wrapPi(m.b - b_hat);
-    Eigen::Matrix2d S = H * lm.Sigma * H.transpose() + R;
-
-    Eigen::LLT<Eigen::Matrix2d> llt(S);
-    if (llt.info() != Eigen::Success) continue;
-
-    const Eigen::Matrix2d S_inv = llt.solve(Eigen::Matrix2d::Identity());
-    const double d2 = (nu.transpose() * S_inv * nu)(0,0);
-
-    if (d2 < best_d2) { best_d2 = d2; best = i; }
-  }
-
-  if (best >= 0 && best_d2 <= chi2_gate_rb) return best;
   return -1;
 }
 
@@ -95,13 +61,9 @@ struct PosePropCfg {
   bool   enable      = true;   // ~pose_proposal/enable
   int    Kmax        = 6;      // ~pose_proposal/Kmax
   double eps_fd      = 1e-4;   // ~pose_proposal/eps_fd
-  double clamp_dx    = 0.25;   // ~pose_proposal/clamp_dx
-  double clamp_dy    = 0.25;   // ~pose_proposal/clamp_dy
-  double clamp_dyaw  = 0.05;   // ~pose_proposal/clamp_dyaw (rad)
   double min_dt      = 0.02;   // ~pose_proposal/min_dt (s) lower bound for dt
   double prior_scale = 1.0;    // ~pose_proposal/prior_scale multiplier on Q_prior
 } PPC;
-
 
 } // anon
 
@@ -152,12 +114,8 @@ FastSLAM2::FastSLAM2(ros::NodeHandle& nh, ros::NodeHandle& pnh)
   pnh.param("pose_proposal/enable",      PPC.enable,      PPC.enable);
   pnh.param("pose_proposal/Kmax",        PPC.Kmax,        PPC.Kmax);
   pnh.param("pose_proposal/eps_fd",      PPC.eps_fd,      PPC.eps_fd);
-  pnh.param("pose_proposal/clamp_dx",    PPC.clamp_dx,    PPC.clamp_dx);
-  pnh.param("pose_proposal/clamp_dy",    PPC.clamp_dy,    PPC.clamp_dy);
-  pnh.param("pose_proposal/clamp_dyaw",  PPC.clamp_dyaw,  PPC.clamp_dyaw);
   pnh.param("pose_proposal/min_dt",      PPC.min_dt,      PPC.min_dt);
   pnh.param("pose_proposal/prior_scale", PPC.prior_scale, PPC.prior_scale);
-
 
   // Init
   pnh.param("seed_from_params", seed_from_params_, true);
@@ -341,8 +299,30 @@ void FastSLAM2::cbCones(const qcar_visnav::ConeArray::ConstPtr& msg) {
   const auto& bestP = P_[std::max(0, std::min<int>(best_idx_, (int)P_.size()-1))];
   unmatched_world.reserve(meas.size());
   for (const auto& m : meas) {
-    int lidx = (assoc_mode_ == "id") ? associateById(bestP, m)
-                                     : associateByNNRB(bestP, m, ex, chi2_gate_rb_);
+    // Simple viz-only unmatched estimate (keep as-is)
+    int lidx = -1;
+    if (assoc_mode_ == "id") {
+      lidx = associateById(bestP, m);
+      if (lidx >= 0) {
+        // gate
+        const auto& lm = bestP.map[lidx];
+        Eigen::Matrix2d Rz = Eigen::Matrix2d::Zero();
+        Rz(0,0) = std::max(1e-10, m.r_var);
+        Rz(1,1) = std::max(1e-12, m.b_var);
+        double r_h=0,b_h=0; Eigen::Matrix2d H;
+        predictMeasurementRB(bestP.x,bestP.y,bestP.yaw,lm.mu,ex,r_h,b_h,H);
+        Eigen::Vector2d nu; nu << (m.r-r_h), wrapPi(m.b-b_h);
+        const Eigen::Matrix2d S = H*lm.Sigma*H.transpose() + Rz;
+        Eigen::LLT<Eigen::Matrix2d> llt(S);
+        if (llt.info()==Eigen::Success) {
+          const double d2 = (nu.transpose() * llt.solve(Eigen::Matrix2d::Identity()) * nu)(0,0);
+          if (d2 > chi2_gate_rb_) lidx = -1;
+        } else { lidx = -1; }
+      }
+    } else {
+      // nn_rb for viz would require scanning; skip & treat as unmatched
+      lidx = -1;
+    }
     if (lidx < 0) {
       Eigen::Vector2d mu_w; Eigen::Matrix2d J;
       measRBToWorld(bestP.x, bestP.y, bestP.yaw, ex, m.r, m.b, mu_w, J);
@@ -359,93 +339,111 @@ void FastSLAM2::processMeasurementsAt(const ros::Time& t,
                                       const std::vector<MeasRB>& meas_vec,
                                       const LidarExtrinsics& ex)
 {
-  // === Per-particle: measurement-aware pose proposal (FastSLAM 2.0) ===
-  if (PPC.enable) {
-    const int    Kmax   = PPC.Kmax;
-    const double epsFD  = PPC.eps_fd;
+  // --- Precompute pose prior covariance for proposal ---
+  double dt_Q = PPC.min_dt;
+  if (odom_buf_.size() >= 2) {
+    const auto& a = odom_buf_[odom_buf_.size()-2];
+    const auto& b = odom_buf_.back();
+    dt_Q = std::max(PPC.min_dt, (b.t - a.t).toSec());
+  }
+  Eigen::Matrix3d Q_prior = (Eigen::Vector3d(
+      motion_noise_.sigma_x * motion_noise_.sigma_x,
+      motion_noise_.sigma_y * motion_noise_.sigma_y,
+      motion_noise_.sigma_yaw * motion_noise_.sigma_yaw) * dt_Q
+    ).asDiagonal();
+  Q_prior *= PPC.prior_scale;
 
-    // Approximate dt for pose prior Q from odom; enforce a lower bound
-    double dt_Q = PPC.min_dt;
-    if (odom_buf_.size() >= 2) {
-      const auto& a = odom_buf_[odom_buf_.size()-2];
-      const auto& b = odom_buf_.back();
-      dt_Q = std::max(PPC.min_dt, (b.t - a.t).toSec());
-    }
-
-    Eigen::Matrix3d Q_prior = (Eigen::Vector3d(
-        motion_noise_.sigma_x * motion_noise_.sigma_x,
-        motion_noise_.sigma_y * motion_noise_.sigma_y,
-        motion_noise_.sigma_yaw * motion_noise_.sigma_yaw) * dt_Q
-      ).asDiagonal();
-
-    Q_prior *= PPC.prior_scale;  // soften/strengthen the prior if desired
-
-
+  // === Per-particle: global one-to-one association, pose proposal with S^{-1}, then EKF updates ===
   for (auto& p : P_) {
-    // --- 1) Build provisional associations and scores (d2) ---
-    struct Match { int lidx; int midx; double d2; Eigen::Vector2d nu; Eigen::Matrix2d R; };
-    std::vector<Match> matches; matches.reserve(meas_vec.size());
+    // ---- Build candidate pair list (gated by chi2) ----
+    struct Candidate {
+      int lidx;
+      int midx;
+      double d2;
+      Eigen::Vector2d nu;
+      Eigen::Matrix2d S_inv;
+    };
+    std::vector<Candidate> cand; cand.reserve(meas_vec.size() * std::max<size_t>(1, p.map.size()));
 
-    for (int mi = 0; mi < (int)meas_vec.size(); ++mi) {
-      const auto& m = meas_vec[mi];
-      int lidx = -1;
+    if (assoc_mode_ == "id") {
+      // Only ID-consistent pairs
+      for (int mi = 0; mi < (int)meas_vec.size(); ++mi) {
+        const auto& m = meas_vec[mi];
+        int lidx = associateById(p, m);
+        if (lidx < 0) continue;
+        const auto& lm = p.map[lidx];
 
-      if (assoc_mode_ == "id") {
-        lidx = associateById(p, m);
-        if (lidx >= 0) {
-          // gate the ID match using chi2 like NN does
-          const auto& lm = p.map[lidx];
-          Eigen::Matrix2d R = Eigen::Matrix2d::Zero();
-          R(0,0) = std::max(1e-10, m.r_var);
-          R(1,1) = std::max(1e-12, m.b_var);
+        Eigen::Matrix2d Rz = Eigen::Matrix2d::Zero();
+        Rz(0,0) = std::max(1e-10, m.r_var);
+        Rz(1,1) = std::max(1e-12, m.b_var);
 
-          double r_h=0, b_h=0; Eigen::Matrix2d Hlm;
-          predictMeasurementRB(p.x, p.y, p.yaw, lm.mu, ex, r_h, b_h, Hlm);
-          Eigen::Vector2d nu; nu << (m.r - r_h), wrapPi(m.b - b_h);
-          const Eigen::Matrix2d S = Hlm * lm.Sigma * Hlm.transpose() + R;
-          Eigen::LLT<Eigen::Matrix2d> llt(S);
-          if (llt.info() == Eigen::Success) {
-            const Eigen::Matrix2d Sinv = llt.solve(Eigen::Matrix2d::Identity());
-            const double d2 = (nu.transpose() * Sinv * nu)(0,0);
-            if (d2 <= chi2_gate_rb_) {
-              matches.push_back({lidx, mi, d2, nu, R});
-            }
-          }
+        double r_h=0, b_h=0; Eigen::Matrix2d Hlm;
+        predictMeasurementRB(p.x, p.y, p.yaw, lm.mu, ex, r_h, b_h, Hlm);
+
+        Eigen::Vector2d nu; nu << (m.r - r_h), wrapPi(m.b - b_h);
+        const Eigen::Matrix2d S = Hlm * lm.Sigma * Hlm.transpose() + Rz;
+        Eigen::LLT<Eigen::Matrix2d> llt(S);
+        if (llt.info() != Eigen::Success) continue;
+        const Eigen::Matrix2d Sinv = llt.solve(Eigen::Matrix2d::Identity());
+        const double d2 = (nu.transpose() * Sinv * nu)(0,0);
+        if (d2 <= chi2_gate_rb_) {
+          cand.push_back({lidx, mi, d2, nu, Sinv});
         }
-      } else {
-        lidx = associateByNNRB(p, m, ex, chi2_gate_rb_);
-        if (lidx >= 0) {
-          const auto& lm = p.map[lidx];
-          Eigen::Matrix2d R = Eigen::Matrix2d::Zero();
-          R(0,0) = std::max(1e-10, m.r_var);
-          R(1,1) = std::max(1e-12, m.b_var);
+      }
+    } else {
+      // Consider all LMs; gate by chi2
+      for (int mi = 0; mi < (int)meas_vec.size(); ++mi) {
+        const auto& m = meas_vec[mi];
+
+        Eigen::Matrix2d Rz = Eigen::Matrix2d::Zero();
+        Rz(0,0) = std::max(1e-10, m.r_var);
+        Rz(1,1) = std::max(1e-12, m.b_var);
+
+        for (int lj = 0; lj < (int)p.map.size(); ++lj) {
+          const auto& lm = p.map[lj];
+
           double r_h=0, b_h=0; Eigen::Matrix2d Hlm;
           predictMeasurementRB(p.x, p.y, p.yaw, lm.mu, ex, r_h, b_h, Hlm);
+
           Eigen::Vector2d nu; nu << (m.r - r_h), wrapPi(m.b - b_h);
-          // Recompute d2 for sorting (associateByNN already gated)
-          const Eigen::Matrix2d S = Hlm * lm.Sigma * Hlm.transpose() + R;
+          const Eigen::Matrix2d S = Hlm * lm.Sigma * Hlm.transpose() + Rz;
           Eigen::LLT<Eigen::Matrix2d> llt(S);
-          if (llt.info() == Eigen::Success) {
-            const Eigen::Matrix2d Sinv = llt.solve(Eigen::Matrix2d::Identity());
-            const double d2 = (nu.transpose() * Sinv * nu)(0,0);
-            matches.push_back({lidx, mi, d2, nu, R});
+          if (llt.info() != Eigen::Success) continue;
+          const Eigen::Matrix2d Sinv = llt.solve(Eigen::Matrix2d::Identity());
+          const double d2 = (nu.transpose() * Sinv * nu)(0,0);
+          if (d2 <= chi2_gate_rb_) {
+            cand.push_back({lj, mi, d2, nu, Sinv});
           }
         }
       }
     }
 
-    if (!matches.empty()) {
-      // --- 2) pick up to K best by Mahalanobis distance ---
-      std::sort(matches.begin(), matches.end(),
-                [](const Match& a, const Match& b){ return a.d2 < b.d2; });
-      if ((int)matches.size() > Kmax) matches.resize(Kmax);
+    // ---- Greedy one-to-one selection (sorted by d2) ----
+    std::sort(cand.begin(), cand.end(),
+              [](const Candidate& a, const Candidate& b){ return a.d2 < b.d2; });
 
-      // --- 3) Build pose posterior info and take one Gauss–Newton step ---
+    std::vector<char> meas_used(meas_vec.size(), 0);
+    std::vector<char> lm_used(p.map.size(), 0);
+    std::vector<Candidate> matched; matched.reserve(std::min(meas_vec.size(), p.map.size()));
+
+    for (const auto& c : cand) {
+      if (c.midx < 0 || c.midx >= (int)meas_vec.size()) continue;
+      if (c.lidx < 0 || c.lidx >= (int)p.map.size())     continue;
+      if (meas_used[c.midx] || lm_used[c.lidx]) continue;
+      meas_used[c.midx] = 1;
+      lm_used[c.lidx]   = 1;
+      matched.push_back(c);
+    }
+
+    // ---- Pose proposal (FastSLAM 2.0) with S^{-1} using up to Kmax matches ----
+    if (PPC.enable && !matched.empty()) {
       Eigen::Matrix3d Lambda = Q_prior.inverse();
       Eigen::Vector3d eta    = Eigen::Vector3d::Zero();
 
-      for (const auto& mrec : matches) {
-        const auto& lm = p.map[mrec.lidx];
+      const int Kuse = std::min((int)matched.size(), PPC.Kmax);
+      for (int k = 0; k < Kuse; ++k) {
+        const auto& mrec = matched[k];
+        const auto& lm   = p.map[mrec.lidx];
 
         auto h = [&](double X, double Y, double Yaw){
           double r=0, b=0; Eigen::Matrix2d H_unused;
@@ -455,129 +453,90 @@ void FastSLAM2::processMeasurementsAt(const ros::Time& t,
 
         const Eigen::Vector2d h0 = h(p.x, p.y, p.yaw);
         Eigen::Matrix<double,2,3> Hx;
-        Hx.col(0) = (h(p.x+epsFD, p.y,       p.yaw     ) - h0) / epsFD;
-        Hx.col(1) = (h(p.x,       p.y+epsFD, p.yaw     ) - h0) / epsFD;
-        Hx.col(2) = (h(p.x,       p.y,       p.yaw+epsFD) - h0) / epsFD;
+        Hx.col(0) = (h(p.x+PPC.eps_fd, p.y,           p.yaw        ) - h0) / PPC.eps_fd;
+        Hx.col(1) = (h(p.x,           p.y+PPC.eps_fd, p.yaw        ) - h0) / PPC.eps_fd;
+        Hx.col(2) = (h(p.x,           p.y,            p.yaw+PPC.eps_fd) - h0) / PPC.eps_fd;
 
-        // Use saved innovation (wrapped) and R
-        const Eigen::Matrix2d Rinv = mrec.R.inverse();
-        Lambda += Hx.transpose() * Rinv * Hx;
-        eta    += Hx.transpose() * Rinv * mrec.nu;
+        // Use S^{-1} from the candidate (built with current pose)
+        Lambda += Hx.transpose() * mrec.S_inv * Hx;
+        eta    += Hx.transpose() * mrec.S_inv * mrec.nu;
       }
 
       Eigen::LDLT<Eigen::Matrix3d> ldlt(Lambda);
       if (ldlt.info() == Eigen::Success) {
         const Eigen::Vector3d dxi = ldlt.solve(eta);
-        // clamp for safety
-        const double dx   = std::max(-PPC.clamp_dx,   std::min(PPC.clamp_dx,   dxi(0)));
-        const double dy   = std::max(-PPC.clamp_dy,   std::min(PPC.clamp_dy,   dxi(1)));
-        const double dyaw = std::max(-PPC.clamp_dyaw, std::min(PPC.clamp_dyaw, dxi(2)));
-
-
-        p.x   += dx;
-        p.y   += dy;
-        p.yaw  = wrapPi(p.yaw + dyaw);
+        p.x   += dxi(0);
+        p.y   += dxi(1);
+        p.yaw  = wrapPi(p.yaw + dxi(2));
       }
     }
-  } // end pose proposal loop
-}
 
-  // === Landmark EKF updates + log-likelihood accumulation (original) ===
-  for (auto& p : P_) {
+    // ---- EKF landmark updates + log-likelihood using the SAME matches ----
     double log_w_inc = 0.0;
-    int matched_cnt = 0;
+    for (const auto& mrec : matched) {
+      const auto& m  = meas_vec[mrec.midx];
+      auto&       lm = p.map[mrec.lidx];
 
-    for (const auto& m : meas_vec) {
-      int lidx = -1;
-      if (assoc_mode_ == "id") {
-        lidx = associateById(p, m);
-        // gate the ID match once more here to avoid bad updates
-        if (lidx >= 0) {
-          const auto& lm = p.map[lidx];
-          Eigen::Matrix2d Rz = Eigen::Matrix2d::Zero();
-          Rz(0,0) = std::max(1e-10, m.r_var);
-          Rz(1,1) = std::max(1e-12, m.b_var);
-          double r_h=0, b_h=0; Eigen::Matrix2d H;
-          predictMeasurementRB(p.x, p.y, p.yaw, lm.mu, ex, r_h, b_h, H);
-          Eigen::Vector2d nu; nu << (m.r - r_h), wrapPi(m.b - b_h);
-          const Eigen::Matrix2d S = H * lm.Sigma * H.transpose() + Rz;
-          Eigen::LLT<Eigen::Matrix2d> llt(S);
-          if (llt.info() == Eigen::Success) {
-            const Eigen::Matrix2d Sinv = llt.solve(Eigen::Matrix2d::Identity());
-            const double d2 = (nu.transpose() * Sinv * nu)(0,0);
-            if (d2 > chi2_gate_rb_) lidx = -1; // reject bad ID
-          } else {
-            lidx = -1;
-          }
-        }
-      } else {
-        lidx = associateByNNRB(p, m, ex, chi2_gate_rb_);
+      Eigen::Matrix2d Rz = Eigen::Matrix2d::Zero();
+      Rz(0,0) = std::max(1e-10, m.r_var);
+      Rz(1,1) = std::max(1e-12, m.b_var);
+
+      double r_h=0, b_h=0; Eigen::Matrix2d H;
+      predictMeasurementRB(p.x, p.y, p.yaw, lm.mu, ex, r_h, b_h, H);
+
+      Eigen::Vector2d nu; nu << (m.r - r_h), wrapPi(m.b - b_h);
+      const Eigen::Matrix2d S = H * lm.Sigma * H.transpose() + Rz;
+
+      Eigen::LLT<Eigen::Matrix2d> llt(S);
+      if (llt.info() != Eigen::Success) {
+        Eigen::Matrix2d Sj = S + 1e-9 * Eigen::Matrix2d::Identity();
+        llt.compute(Sj);
       }
+      const Eigen::Matrix2d Sinv = llt.solve(Eigen::Matrix2d::Identity());
+      const double quad = (nu.transpose() * Sinv * nu)(0,0);
+      Eigen::Matrix2d L = llt.matrixL().toDenseMatrix();
+      const double logdet = 2.0 * (std::log(std::max(1e-18, L(0,0))) +
+                                   std::log(std::max(1e-18, L(1,1))));
+      log_w_inc += -0.5 * (quad + logdet + 2.0 * std::log(2.0 * M_PI));
 
-      if (lidx >= 0) {
-        auto& lm = p.map[lidx];
-
-        Eigen::Matrix2d Rz = Eigen::Matrix2d::Zero();
-        Rz(0,0) = std::max(1e-10, m.r_var);
-        Rz(1,1) = std::max(1e-12, m.b_var);
-
-        double r_h=0, b_h=0; Eigen::Matrix2d H;
-        predictMeasurementRB(p.x, p.y, p.yaw, lm.mu, ex, r_h, b_h, H);
-
-        Eigen::Vector2d nu; nu << (m.r - r_h), wrapPi(m.b - b_h);
-        const Eigen::Matrix2d S = H * lm.Sigma * H.transpose() + Rz;
-
-        Eigen::LLT<Eigen::Matrix2d> llt(S);
-        if (llt.info() != Eigen::Success) {
-          Eigen::Matrix2d Sj = S + 1e-9 * Eigen::Matrix2d::Identity();
-          llt.compute(Sj);
-        }
-        const Eigen::Matrix2d Sinv = llt.solve(Eigen::Matrix2d::Identity());
-        const double quad = (nu.transpose() * Sinv * nu)(0,0);
-        Eigen::Matrix2d L = llt.matrixL().toDenseMatrix();
-        const double logdet = 2.0 * (std::log(std::max(1e-18, L(0,0))) +
-                                     std::log(std::max(1e-18, L(1,1))));
-        log_w_inc += -0.5 * (quad + logdet + 2.0 * std::log(2.0 * M_PI));
-        matched_cnt++;
-
-        // EKF update (skip if locked)
-        if (!lm.locked) {
-          const Eigen::Matrix2d K = lm.Sigma * H.transpose() * Sinv;
-          lm.mu    = lm.mu + K * nu;
-          lm.Sigma = (Eigen::Matrix2d::Identity() - K * H) * lm.Sigma;
-        }
-
-        lm.hits++;
-        if (!lm.confirmed && lm.hits >= lm_confirm_hits_) lm.confirmed = true;
-        if (!lm.locked) {
-          if (lm.hits >= lm_lock_hits_ || lm.Sigma.trace() <= lm_lock_cov_trace_) {
-            lm.locked = true;
-          }
-        }
-      } else {
-        // Unmatched -> birth
-        Eigen::Vector2d mu_w; Eigen::Matrix2d J;
-        measRBToWorld(p.x, p.y, p.yaw, ex, m.r, m.b, mu_w, J);
-
-        Eigen::Matrix2d Rz = Eigen::Matrix2d::Zero();
-        Rz(0,0) = std::max(1e-10, m.r_var);
-        Rz(1,1) = std::max(1e-12, m.b_var);
-
-        Landmark lm;
-        lm.mu = mu_w;
-        lm.Sigma = J * Rz * J.transpose() + lm_init_var_ * Eigen::Matrix2d::Identity();
-        lm.hits = 1; lm.misses = 0; lm.confirmed = (lm_confirm_hits_ <= 1);
-        lm.locked = (lm.hits >= lm_lock_hits_) || (lm.Sigma.trace() <= lm_lock_cov_trace_);
-        lm.id = m.id;
-        p.map.push_back(lm);
+      if (!lm.locked) {
+        const Eigen::Matrix2d K = lm.Sigma * H.transpose() * Sinv;
+        lm.mu    = lm.mu + K * nu;
+        lm.Sigma = (Eigen::Matrix2d::Identity() - K * H) * lm.Sigma;
       }
-    } // measurements
+      lm.hits++;
+      if (!lm.confirmed && lm.hits >= lm_confirm_hits_) lm.confirmed = true;
+      if (!lm.locked) {
+        if (lm.hits >= lm_lock_hits_ || lm.Sigma.trace() <= lm_lock_cov_trace_) {
+          lm.locked = true;
+        }
+      }
+    }
 
-    // Optional penalty when nothing matched (kept disabled)
-    // if (matched_cnt == 0) log_w_inc += -1.0;
+    // ---- Birth unmatched measurements ----
+    for (int mi = 0; mi < (int)meas_vec.size(); ++mi) {
+      if (meas_used[mi]) continue; // matched above
+      const auto& m = meas_vec[mi];
 
+      Eigen::Vector2d mu_w; Eigen::Matrix2d J;
+      measRBToWorld(p.x, p.y, p.yaw, ex, m.r, m.b, mu_w, J);
+
+      Eigen::Matrix2d Rz = Eigen::Matrix2d::Zero();
+      Rz(0,0) = std::max(1e-10, m.r_var);
+      Rz(1,1) = std::max(1e-12, m.b_var);
+
+      Landmark lm;
+      lm.mu = mu_w;
+      lm.Sigma = J * Rz * J.transpose() + lm_init_var_ * Eigen::Matrix2d::Identity();
+      lm.hits = 1; lm.misses = 0; lm.confirmed = (lm_confirm_hits_ <= 1);
+      lm.locked = (lm.hits >= lm_lock_hits_) || (lm.Sigma.trace() <= lm_lock_cov_trace_);
+      lm.id = m.id;
+      p.map.push_back(lm);
+    }
+
+    // ---- accumulate log-weight increment ----
     p.log_w += log_w_inc;
-  } // particles
+  } // end per-particle loop
 
   // === Convert log-weights -> weights (stable), then normalize ===
   double max_logw = -std::numeric_limits<double>::infinity();
