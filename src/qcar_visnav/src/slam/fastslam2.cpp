@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <random>
+#include <limits>
 #include <Eigen/Dense>
 
 #include <tf2/LinearMath/Quaternion.h>
@@ -89,6 +90,19 @@ inline double logGaussian(const Eigen::VectorXd& x,
   return -0.5 * (quad + logdet + d * std::log(2.0 * M_PI));
 }
 
+// --- Pose-proposal (FS2.0) tunables loaded from YAML ---
+struct PosePropCfg {
+  bool   enable      = true;   // ~pose_proposal/enable
+  int    Kmax        = 6;      // ~pose_proposal/Kmax
+  double eps_fd      = 1e-4;   // ~pose_proposal/eps_fd
+  double clamp_dx    = 0.25;   // ~pose_proposal/clamp_dx
+  double clamp_dy    = 0.25;   // ~pose_proposal/clamp_dy
+  double clamp_dyaw  = 0.05;   // ~pose_proposal/clamp_dyaw (rad)
+  double min_dt      = 0.02;   // ~pose_proposal/min_dt (s) lower bound for dt
+  double prior_scale = 1.0;    // ~pose_proposal/prior_scale multiplier on Q_prior
+} PPC;
+
+
 } // anon
 
 // ================== ctor ==================
@@ -133,6 +147,17 @@ FastSLAM2::FastSLAM2(ros::NodeHandle& nh, ros::NodeHandle& pnh)
   pnh.param("motion_noise/sigma_yaw", mn.sigma_yaw, 0.01);
   motion_ = MotionModel(mn);
   motion_noise_ = mn;
+
+  // --- pose proposal (YAML: ~pose_proposal/...) ---
+  pnh.param("pose_proposal/enable",      PPC.enable,      PPC.enable);
+  pnh.param("pose_proposal/Kmax",        PPC.Kmax,        PPC.Kmax);
+  pnh.param("pose_proposal/eps_fd",      PPC.eps_fd,      PPC.eps_fd);
+  pnh.param("pose_proposal/clamp_dx",    PPC.clamp_dx,    PPC.clamp_dx);
+  pnh.param("pose_proposal/clamp_dy",    PPC.clamp_dy,    PPC.clamp_dy);
+  pnh.param("pose_proposal/clamp_dyaw",  PPC.clamp_dyaw,  PPC.clamp_dyaw);
+  pnh.param("pose_proposal/min_dt",      PPC.min_dt,      PPC.min_dt);
+  pnh.param("pose_proposal/prior_scale", PPC.prior_scale, PPC.prior_scale);
+
 
   // Init
   pnh.param("seed_from_params", seed_from_params_, true);
@@ -334,21 +359,162 @@ void FastSLAM2::processMeasurementsAt(const ros::Time& t,
                                       const std::vector<MeasRB>& meas_vec,
                                       const LidarExtrinsics& ex)
 {
-  // === Per-particle: DA + LM EKF updates + accumulate measurement log-likelihood ===
+  // === Per-particle: measurement-aware pose proposal (FastSLAM 2.0) ===
+  if (PPC.enable) {
+    const int    Kmax   = PPC.Kmax;
+    const double epsFD  = PPC.eps_fd;
+
+    // Approximate dt for pose prior Q from odom; enforce a lower bound
+    double dt_Q = PPC.min_dt;
+    if (odom_buf_.size() >= 2) {
+      const auto& a = odom_buf_[odom_buf_.size()-2];
+      const auto& b = odom_buf_.back();
+      dt_Q = std::max(PPC.min_dt, (b.t - a.t).toSec());
+    }
+
+    Eigen::Matrix3d Q_prior = (Eigen::Vector3d(
+        motion_noise_.sigma_x * motion_noise_.sigma_x,
+        motion_noise_.sigma_y * motion_noise_.sigma_y,
+        motion_noise_.sigma_yaw * motion_noise_.sigma_yaw) * dt_Q
+      ).asDiagonal();
+
+    Q_prior *= PPC.prior_scale;  // soften/strengthen the prior if desired
+
+
   for (auto& p : P_) {
-    double log_w_inc = 0.0;   // accumulate log-likelihood over matched measurements
+    // --- 1) Build provisional associations and scores (d2) ---
+    struct Match { int lidx; int midx; double d2; Eigen::Vector2d nu; Eigen::Matrix2d R; };
+    std::vector<Match> matches; matches.reserve(meas_vec.size());
+
+    for (int mi = 0; mi < (int)meas_vec.size(); ++mi) {
+      const auto& m = meas_vec[mi];
+      int lidx = -1;
+
+      if (assoc_mode_ == "id") {
+        lidx = associateById(p, m);
+        if (lidx >= 0) {
+          // gate the ID match using chi2 like NN does
+          const auto& lm = p.map[lidx];
+          Eigen::Matrix2d R = Eigen::Matrix2d::Zero();
+          R(0,0) = std::max(1e-10, m.r_var);
+          R(1,1) = std::max(1e-12, m.b_var);
+
+          double r_h=0, b_h=0; Eigen::Matrix2d Hlm;
+          predictMeasurementRB(p.x, p.y, p.yaw, lm.mu, ex, r_h, b_h, Hlm);
+          Eigen::Vector2d nu; nu << (m.r - r_h), wrapPi(m.b - b_h);
+          const Eigen::Matrix2d S = Hlm * lm.Sigma * Hlm.transpose() + R;
+          Eigen::LLT<Eigen::Matrix2d> llt(S);
+          if (llt.info() == Eigen::Success) {
+            const Eigen::Matrix2d Sinv = llt.solve(Eigen::Matrix2d::Identity());
+            const double d2 = (nu.transpose() * Sinv * nu)(0,0);
+            if (d2 <= chi2_gate_rb_) {
+              matches.push_back({lidx, mi, d2, nu, R});
+            }
+          }
+        }
+      } else {
+        lidx = associateByNNRB(p, m, ex, chi2_gate_rb_);
+        if (lidx >= 0) {
+          const auto& lm = p.map[lidx];
+          Eigen::Matrix2d R = Eigen::Matrix2d::Zero();
+          R(0,0) = std::max(1e-10, m.r_var);
+          R(1,1) = std::max(1e-12, m.b_var);
+          double r_h=0, b_h=0; Eigen::Matrix2d Hlm;
+          predictMeasurementRB(p.x, p.y, p.yaw, lm.mu, ex, r_h, b_h, Hlm);
+          Eigen::Vector2d nu; nu << (m.r - r_h), wrapPi(m.b - b_h);
+          // Recompute d2 for sorting (associateByNN already gated)
+          const Eigen::Matrix2d S = Hlm * lm.Sigma * Hlm.transpose() + R;
+          Eigen::LLT<Eigen::Matrix2d> llt(S);
+          if (llt.info() == Eigen::Success) {
+            const Eigen::Matrix2d Sinv = llt.solve(Eigen::Matrix2d::Identity());
+            const double d2 = (nu.transpose() * Sinv * nu)(0,0);
+            matches.push_back({lidx, mi, d2, nu, R});
+          }
+        }
+      }
+    }
+
+    if (!matches.empty()) {
+      // --- 2) pick up to K best by Mahalanobis distance ---
+      std::sort(matches.begin(), matches.end(),
+                [](const Match& a, const Match& b){ return a.d2 < b.d2; });
+      if ((int)matches.size() > Kmax) matches.resize(Kmax);
+
+      // --- 3) Build pose posterior info and take one Gauss–Newton step ---
+      Eigen::Matrix3d Lambda = Q_prior.inverse();
+      Eigen::Vector3d eta    = Eigen::Vector3d::Zero();
+
+      for (const auto& mrec : matches) {
+        const auto& lm = p.map[mrec.lidx];
+
+        auto h = [&](double X, double Y, double Yaw){
+          double r=0, b=0; Eigen::Matrix2d H_unused;
+          predictMeasurementRB(X, Y, Yaw, lm.mu, ex, r, b, H_unused);
+          return Eigen::Vector2d(r,b);
+        };
+
+        const Eigen::Vector2d h0 = h(p.x, p.y, p.yaw);
+        Eigen::Matrix<double,2,3> Hx;
+        Hx.col(0) = (h(p.x+epsFD, p.y,       p.yaw     ) - h0) / epsFD;
+        Hx.col(1) = (h(p.x,       p.y+epsFD, p.yaw     ) - h0) / epsFD;
+        Hx.col(2) = (h(p.x,       p.y,       p.yaw+epsFD) - h0) / epsFD;
+
+        // Use saved innovation (wrapped) and R
+        const Eigen::Matrix2d Rinv = mrec.R.inverse();
+        Lambda += Hx.transpose() * Rinv * Hx;
+        eta    += Hx.transpose() * Rinv * mrec.nu;
+      }
+
+      Eigen::LDLT<Eigen::Matrix3d> ldlt(Lambda);
+      if (ldlt.info() == Eigen::Success) {
+        const Eigen::Vector3d dxi = ldlt.solve(eta);
+        // clamp for safety
+        const double dx   = std::max(-PPC.clamp_dx,   std::min(PPC.clamp_dx,   dxi(0)));
+        const double dy   = std::max(-PPC.clamp_dy,   std::min(PPC.clamp_dy,   dxi(1)));
+        const double dyaw = std::max(-PPC.clamp_dyaw, std::min(PPC.clamp_dyaw, dxi(2)));
+
+
+        p.x   += dx;
+        p.y   += dy;
+        p.yaw  = wrapPi(p.yaw + dyaw);
+      }
+    }
+  } // end pose proposal loop
+}
+
+  // === Landmark EKF updates + log-likelihood accumulation (original) ===
+  for (auto& p : P_) {
+    double log_w_inc = 0.0;
     int matched_cnt = 0;
 
     for (const auto& m : meas_vec) {
       int lidx = -1;
       if (assoc_mode_ == "id") {
         lidx = associateById(p, m);
-      } else { // "nn_rb"
+        // gate the ID match once more here to avoid bad updates
+        if (lidx >= 0) {
+          const auto& lm = p.map[lidx];
+          Eigen::Matrix2d Rz = Eigen::Matrix2d::Zero();
+          Rz(0,0) = std::max(1e-10, m.r_var);
+          Rz(1,1) = std::max(1e-12, m.b_var);
+          double r_h=0, b_h=0; Eigen::Matrix2d H;
+          predictMeasurementRB(p.x, p.y, p.yaw, lm.mu, ex, r_h, b_h, H);
+          Eigen::Vector2d nu; nu << (m.r - r_h), wrapPi(m.b - b_h);
+          const Eigen::Matrix2d S = H * lm.Sigma * H.transpose() + Rz;
+          Eigen::LLT<Eigen::Matrix2d> llt(S);
+          if (llt.info() == Eigen::Success) {
+            const Eigen::Matrix2d Sinv = llt.solve(Eigen::Matrix2d::Identity());
+            const double d2 = (nu.transpose() * Sinv * nu)(0,0);
+            if (d2 > chi2_gate_rb_) lidx = -1; // reject bad ID
+          } else {
+            lidx = -1;
+          }
+        }
+      } else {
         lidx = associateByNNRB(p, m, ex, chi2_gate_rb_);
       }
 
       if (lidx >= 0) {
-        // --- Matched landmark: EKF update (unless locked) + likelihood for weights ---
         auto& lm = p.map[lidx];
 
         Eigen::Matrix2d Rz = Eigen::Matrix2d::Zero();
@@ -361,7 +527,6 @@ void FastSLAM2::processMeasurementsAt(const ros::Time& t,
         Eigen::Vector2d nu; nu << (m.r - r_h), wrapPi(m.b - b_h);
         const Eigen::Matrix2d S = H * lm.Sigma * H.transpose() + Rz;
 
-        // log-likelihood: -0.5*(nu^T S^-1 nu + logdet(2πS))
         Eigen::LLT<Eigen::Matrix2d> llt(S);
         if (llt.info() != Eigen::Success) {
           Eigen::Matrix2d Sj = S + 1e-9 * Eigen::Matrix2d::Identity();
@@ -375,7 +540,7 @@ void FastSLAM2::processMeasurementsAt(const ros::Time& t,
         log_w_inc += -0.5 * (quad + logdet + 2.0 * std::log(2.0 * M_PI));
         matched_cnt++;
 
-        // EKF state update (skip state change if locked, but keep hit/locking logic)
+        // EKF update (skip if locked)
         if (!lm.locked) {
           const Eigen::Matrix2d K = lm.Sigma * H.transpose() * Sinv;
           lm.mu    = lm.mu + K * nu;
@@ -390,7 +555,7 @@ void FastSLAM2::processMeasurementsAt(const ros::Time& t,
           }
         }
       } else {
-        // --- Unmatched: birth a new LM in world frame (no weight bonus) ---
+        // Unmatched -> birth
         Eigen::Vector2d mu_w; Eigen::Matrix2d J;
         measRBToWorld(p.x, p.y, p.yaw, ex, m.r, m.b, mu_w, J);
 
@@ -408,7 +573,7 @@ void FastSLAM2::processMeasurementsAt(const ros::Time& t,
       }
     } // measurements
 
-    // If nothing matched, you can optionally add a tiny penalty to discourage “blind” particles:
+    // Optional penalty when nothing matched (kept disabled)
     // if (matched_cnt == 0) log_w_inc += -1.0;
 
     p.log_w += log_w_inc;
