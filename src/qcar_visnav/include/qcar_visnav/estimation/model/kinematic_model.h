@@ -7,6 +7,18 @@
 namespace qcar_nav {
 
 /**
+ * @brief Compute skew-symmetric matrix from a 3D vector
+ * Used for cross-product operations: S(v) * w = v × w
+ */
+inline Eigen::Matrix3d skew(const Eigen::Vector3d& v) {
+  Eigen::Matrix3d S;
+  S <<     0, -v(2),  v(1),
+       v(2),     0, -v(0),
+      -v(1),  v(0),     0;
+  return S;
+}
+
+/**
  * @brief Velocity-based kinematic model for QCar
  * State: [vx, vy, r, bg, bax, bay]
  * - vx, vy: body-frame velocities (m/s)

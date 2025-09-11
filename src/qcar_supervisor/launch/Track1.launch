@@ -68,6 +68,11 @@
           output="screen"/>
   </group>
 
+  <!-- ================= IMU Smoothing Node ================= -->
+  <!-- <node pkg="qcar_supervisor" type="smooth_imu_node" name="smooth_imu" output="screen">
+    <param name="alpha" value="0.5"/>
+  </node> -->
+
   <!-- ================= Supervisory JMF Node ================= -->
   <!-- load all JMF parameters into the global namespace -->
   <!-- loads Q, Pi, model_length -->
@@ -78,14 +83,8 @@
   <!-- load jmf params into this node's namespace -->
     <rosparam file="$(find qcar_supervisor)/config/jmf.yaml"
               command="load"/>
+    <!-- <remap from="/imu" to="/imu_smoothed"/> -->
   </node>
-
-
-  <!-- ================= Noisy Position Node ================= -->
-  <node pkg="qcar_supervisor"
-        type="noisy_pos_node"
-        name="noisy_pos_node"
-        output="screen"/>
 
   <!-- ================= Mode-Probability Plotter ================= -->
   <node pkg="qcar_supervisor"

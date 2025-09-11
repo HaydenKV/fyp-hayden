@@ -7,38 +7,38 @@ model_length: 0.258
 mode_params:
   # 0: Healthy mode — extremely tight Q & R so it dominates when no fault
   healthy:
-    L:   0.258
-    q:   [!!float 1e-6, !!float 1e-6, !!float 1e-6, !!float 1e-9, !!float 1e-9, !!float 1e-9]
-    R_imu: [0.1,   0.00,   0.00,   0.1]     # very confident in IMU under healthy
-    R_vel: [0.05,  0.00,   0.00,   0.05]    # very confident in velocity
+    L: 0.258
+    q:     [0.05,   0.05,   0.01,   1e-6, 1e-6, 1e-6]
+    R_imu: [0.0025, 0.00,   0.00,   0.001 ]
+    R_vel: [0.0002, 0.00,   0.00,   0.0002]
 
   # 1: Motor fault — huge process noise on speed, downweight velocity updates
   motor_fault:
-    L:   0.258
-    q:   [!!float 2.0, !!float 2.0, !!float 1e-6, !!float 1e-9, !!float 1e-9, !!float 1e-9]
-    R_imu: [0.5,  0.00,   0.00,   0.5]
-    R_vel: [50.0,   0.00,   0.00,   50.0 ]    # very uncertain about velocity
+    L: 0.258
+    q:     [1.0,    1.0,    0.01,   1e-6, 1e-6, 1e-6]
+    R_imu: [0.1,    0.00,   0.00,   0.05  ]
+    R_vel: [20.0,   0.00,   0.00,   20.0  ]
 
   # 2: Steering fault — huge process noise on yaw‐rate, downweight IMU‐based yaw updates
   steering_fault:
-    L:   0.258
-    q:   [!!float 1e-6, !!float 1e-6, !!float 2.0, !!float 1e-9, !!float 1e-9, !!float 1e-9]
-    R_imu: [0.5,  0.00,   0.00,   0.5]    # less trust in IMU yaw measurement
-    R_vel: [0.1,  0.00,   0.00,   0.1]
+    L: 0.258
+    q:     [0.05,   0.05,   0.5,    1e-6, 1e-6, 1e-6]
+    R_imu: [0.1,    0.00,   0.00,   0.05  ]
+    R_vel: [0.001,  0.00,   0.00,   0.001 ]
 
   # 3: IMU fault — huge process noise on accel bias, ignore IMU updates
   imu_fault:
-    L:   0.258
-    q:   [!!float 1e-6, !!float 1e-6, !!float 1e-6, !!float 0.5, !!float 1e-9, !!float 1e-9]
-    R_imu: [100.0,  0.00,   0.00,   100.0]   # virtually ignore accelerometer
-    R_vel: [0.1,  0.00,   0.00,   0.1]
+    L: 0.258
+    q:     [0.05,   0.05,   0.01,   1.0,  1e-6, 1e-6]
+    R_imu: [10.0,   0.00,   0.00,   10.0  ]
+    R_vel: [0.001,  0.00,   0.00,   0.001 ]
 
   # 4: Encoder fault — huge process noise on wheel‐bias, ignore odometry velocity
   encoder_fault:
-    L:   0.258
-    q:   [!!float 1e-6, !!float 1e-6, !!float 1e-6, !!float 1e-9, !!float 0.5, !!float 1e-9]
-    R_imu: [0.5,  0.00,   0.00,   0.5]
-    R_vel: [100.0,  0.00,   0.00,   100.0]   # virtually ignore wheel‐velocities
+    L: 0.258
+    q:     [0.05,   0.05,   0.01,   1e-6, 1.0,  1e-6]
+    R_imu: [0.1,    0.00,   0.00,   0.05  ]
+    R_vel: [10.0,   0.00,   0.00,   10.0  ]
 
 # Mode-transition matrix (5×5, row-major)
 pi: [
@@ -56,7 +56,7 @@ pi: [
   # 1.00,  0.00,  0.00,  0.00,  0.00,
   # from encoder_fault
   0.05,  0.02,  0.02,  0.02,  0.90
-  # 1.00,  0.00,  0.00,  0.00,  0.00,
+  # 1.00,  0.00,  0.00,  0.00,  0.00
 ]
 
 # At what rate (Hz) to publish fused topics

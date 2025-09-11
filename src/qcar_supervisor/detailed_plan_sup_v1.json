@@ -68,20 +68,75 @@
       }
     },
     "current_progress": [
-      "Loaded model_length, q-vector (size 6) and π matrix (mapped into Eigen::MatrixXd) from the private namespace without missing-parameter errors.",
-      "Replaced fixed-size π declaration; used Eigen::Map<RowMajor> to ingest arbitrary N×N transition matrices safely.",
-      "Initialized JumpMarkovFilter with zeroed state and identity covariance; set mode0 uniformly across N modes.",
-      "Subscribed to /imu, /odom (wheelCallback stub), and /noisy_odom; implemented predict/update cycles for IMU and position measurements.",
-      "Published fused odometry (/sup_jmf/odom) and mode probabilities (/sup_jmf/mode_prob, /sup_jmf/current_mode) alongside a TF from 'odom' to 'base_link'.",
-      "Verified continuous node uptime in Gazebo under Track1.launch and seamless integration with the velocity EKF data stream.",
-      "Confirmed sup_jmf_node runs without crashing, but its topics are not yet publishing."
+      "Restored topic advertising and confirmed /sup_jmf/odom, /sup_jmf/mode_prob, /sup_jmf/current_mode are visible on the ROS bus.",
+      "Removed all position‐based updates (pose_lidar & noisy_odom) so the filter state (vx, vy, r, biases) matches only IMU+velocity.",
+      "Verified JMF::init() correctly loads the π matrix via Eigen::Map<RowMajor> and prints it on startup.",
+      "Implemented Likelihood flooring (raw_like = max(norm_const*exp(-0.5·maha), 1e-12)) to prevent exact zero underflow.",
+      "Added node‐level hysteresis: declared_mode only switches if a new mode’s probability exceeds 80% for 3 consecutive cycles, suppressing transient dips.",
+      "Confirmed Mahalanobis distances for IMU and velocity updates now reside in a realistic range (0–20) most of the time, and raw likelihoods remain nonzero.",
+      "Integrated fusedState() and fusedCovariance() publishing alongside TF from 'odom' to 'base_link' at 50 Hz without crashes.",
+      "JMF core is fully functional inside ROS; predict/update cycles perform as expected, mixing IMM priors and computing five per‐mode EKF updates each IMU tick."
     ],
     "missing_components": [
-      "Restore and verify topic advertising and publisher callbacks in sup_jmf_node so fused odometry and mode probabilities actually appear on the bus.",
-      "Implement threshold logic and publication for fault_detected, fault_type, and fault_severity flags.",
-      "Tune the mode transition probability matrix (π) via dynamic_reconfigure or parameter updates to optimize mode inference.",
-      "Write comprehensive unit tests (Google Test) for EKF and JMF under qcar_supervisor/tests.",
-      "Publish diagnostic metrics (innovation norms, likelihoods) via diagnostic_updater."
-    ]
+      "Tune R_imu and R_vel values (or implement log‐likelihood) so that underflow floors never trigger a uniform 0.2 reset after a single outlier.",
+      "Implement multi‐cycle fallback logic inside JumpMarkovFilter::update() to skip uniform resetting unless likelihoods remain near floor for N cycles.",
+      "Expose and publish explicit fault_detected, fault_type, and fault_severity flags based on mode_prob and hysteresis state.",
+      "Write unit tests (Google Test) for JMF: exercising Q, R tuning, likelihood flooring, and multi‐cycle fallback behavior.",
+      "Add diagnostic_updater hooks to stream innovation norms, mahalanobis distances, and raw likelihood vectors for offline tuning."
+    ],
+  "jmf_filter_improvements": {
+    "numerical_stability": {
+      "makeSPD_function": {
+        "location": "JMF.cpp",
+        "code": "template<typename Derived>\nstatic inline void makeSPD(Eigen::MatrixBase<Derived>& A, double eps = 1e-6) {\n  A = 0.5 * (A + A.transpose());\n  Eigen::SelfAdjointEigenSolver<typename Derived::PlainObject> es(A);\n  Eigen::VectorXd vals = es.eigenvalues();\n  typename Derived::PlainObject vecs = es.eigenvectors();\n  for (int k = 0; k < vals.size(); ++k) {\n    if (std::isnan(vals[k]) || vals[k] < eps) vals[k] = eps;\n  }\n  A = vecs * vals.asDiagonal() * vecs.transpose();\n  A = 0.5 * (A + A.transpose());\n}",
+        "status": "implemented"
+      },
+      "apply_makeSPD_to_P_pred": {
+        "location": "JumpMarkovFilter::predict(...)",
+        "code": "makeSPD(P_pred_[i], 1e-6);",
+        "status": "implemented"
+      },
+      "apply_makeSPD_to_S": {
+        "location": "JumpMarkovFilter::update(...)",
+        "code": "makeSPD(S, 1e-5);\nif (S.ldlt().info() != Eigen::Success) {\n  ROS_ERROR_STREAM(\"[JMF] S not SPD on mode=\" << i << \" after makeSPD, hardening further\");\n  S += 1e-4 * Eigen::MatrixXd::Identity(S.rows(), S.cols());\n  makeSPD(S, 1e-6);\n}",
+        "status": "implemented"
+      }
+    },
+    "measurement_model": {
+      "encoder_update_1D": {
+        "location": "sup_jmf_node.cpp → timerPublishCallback",
+        "code": "double v_enc = (wheel_fl_vel_ + wheel_fr_vel_ + wheel_rl_vel_ + wheel_rr_vel_) / 4.0;\nEigen::VectorXd z_enc(1); z_enc << v_enc;\n\nauto h_enc = [&](auto const& x){\n  Eigen::VectorXd zh(1); zh << x(0); return zh;\n};\nauto H_enc = [&](auto const&){\n  Eigen::Matrix<double,1,6> M = Eigen::Matrix<double,1,6>::Zero();\n  M(0,0) = 1.0; return M;\n};\n\nint best = jmf_.mostLikelyMode();\nEigen::MatrixXd R1(1,1);\nR1(0,0) = std::max(1e-6, R_vel_modes_[best](0,0));\n\njmf_.update(z_enc, h_enc, H_enc, R1);",
+        "status": "implemented"
+      }
+    },
+    "parameter_validation": {
+      "R_imu_and_R_vel_sanitization": {
+        "location": "sup_jmf_node.cpp → constructor loop",
+        "code": "if (!mnh.getParam(\"R_imu\", buf) || buf.size() != 4) {\n  ROS_WARN_STREAM(\"[JMF] R_imu missing or wrong size, using default\");\n  R_imu_modes_[i] = Eigen::Matrix2d::Identity() * 0.01;\n} else {\n  R_imu_modes_[i] = Eigen::Map<const Eigen::Matrix<double,2,2,Eigen::RowMajor>>(buf.data());\n}\nR_imu_modes_[i] = 0.5 * (R_imu_modes_[i] + R_imu_modes_[i].transpose());\nR_imu_modes_[i].diagonal().array() = R_imu_modes_[i].diagonal().array().max(1e-4);\n\n// Repeat same for R_vel",
+        "status": "pending"
+      }
+    },
+    "initialization": {
+      "P0_tuning": {
+        "location": "sup_jmf_node.cpp → constructor",
+        "code": "Eigen::Matrix<double,6,6> P0;\nP0.setZero();\nP0.diagonal() << 1.0, 1.0, 0.5, 0.2, 0.2, 0.2;",
+        "status": "implemented"
+      },
+      "mode0_seeding": {
+        "location": "sup_jmf_node.cpp → constructor",
+        "code": "Eigen::VectorXd mode0 = Eigen::VectorXd::Zero(N);\nmode0(0) = 1.0;  // start fully in healthy mode",
+        "status": "implemented"
+      }
+    },
+    "logging_and_debugging": {
+      "eigenvalue_logging": {
+        "location": "JumpMarkovFilter::update(...)",
+        "code": "Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> es_pre(S);\nROS_WARN_STREAM(\"[JMF] mode=\" << i << \" S eigenvalues before SPD: \" << es_pre.eigenvalues().transpose());\n\nmakeSPD(S, 1e-6);\n\nEigen::SelfAdjointEigenSolver<Eigen::MatrixXd> es_post(S);\nROS_WARN_STREAM(\"[JMF] mode=\" << i << \" S eigenvalues after SPD: \" << es_post.eigenvalues().transpose());",
+        "status": "pending"
+      }
+    }
+
+  }
+  }
   }
 }

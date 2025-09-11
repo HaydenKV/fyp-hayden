@@ -91,7 +91,11 @@ catkin_install_python(PROGRAMS
 ## —————————————————————————————————————————————————————————————
 ## JMF library
 add_library(jmf_lib
-  src/JMF/JMF.cpp
+  src/JMF.cpp
+  src/transition_model.cpp
+  src/measurement_accel/measurement_accel.cpp
+  src/measurement_velocity.cpp
+  src/measurement_gyro.cpp
 )
 
 target_compile_definitions(jmf_lib PUBLIC
@@ -113,14 +117,5 @@ add_executable(sup_jmf_node
 target_link_libraries(sup_jmf_node
   jmf_lib
   qcar_visnav_lib
-  ${catkin_LIBRARIES}
-)
-
-## Noisy position node
-add_executable(noisy_pos_node
-  src/nodes/noise_pos_node.cpp
-)
-
-target_link_libraries(noisy_pos_node
   ${catkin_LIBRARIES}
 )
