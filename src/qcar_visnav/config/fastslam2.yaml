@@ -27,7 +27,7 @@ initial_spread:
 odom_buffer_window_sec: 2.0
 
 # Particle filter
-particles: 80
+particles: 120
 resample_neff_ratio: 0.5
 
 # Process noise
