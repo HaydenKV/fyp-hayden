@@ -71,4 +71,33 @@
             </plugin>
         </sensor>
     </gazebo>
+    
+    <!-- NEW: RGB stream for the RGB-D head on the same link as the depth sensor -->
+  <gazebo reference="camera_rgb">
+    <sensor type="camera" name="rgbd_front_color">
+      <visualize>true</visualize>
+      <update_rate>15</update_rate>
+      <camera name="rgbd_front_color_intrinsics">
+        <!-- Match depth sensor settings 1:1 -->
+        <horizontal_fov>1.089</horizontal_fov>
+        <image>
+          <format>R8G8B8</format>
+          <width>640</width>
+          <height>480</height>
+        </image>
+      </camera>
+      <plugin name="rgbd_color_controller" filename="libgazebo_ros_camera.so">
+        <!-- Same head name as depth -->
+        <cameraName>rgbd_front</cameraName>
+        <!-- Share the exact same optical frame -->
+        <frameName>rgbd_front_optical</frameName>
+
+        <!-- Own the main color topics -->
+        <imageTopicName>image_raw</imageTopicName>
+        <cameraInfoTopicName>camera_info</cameraInfoTopicName>
+      </plugin>
+    </sensor>
+  </gazebo>    
+    
+    
 </robot>

@@ -1,30 +1,49 @@
 <?xml version='1.0'?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
-	 <gazebo reference="camera_rgb">
-        <sensor type="depth" name="camera_rgb_depth">
-            <pose>0 0 0 0 0 0 </pose>
-        	<visualize>true</visualize>
-            <always_on>true</always_on>
-            <update_rate>10</update_rate>
-            <camera name="depth_camera">
-                <horizontal_fov>1.089</horizontal_fov>
-                <image>
-                	<format>R8G8B8</format>
-                    <width>640</width>
-                    <height>480</height>
-                </image>
-                <depth>
-                    <image>
-                        <width>640</width>
-                        <height>480</height>
-                        <format>L8</format>
-                    </image>
-                    <range>10</range>
-                </depth>
-            </camera>
-            <plugin name="camera_controller" filename="libgazebo_ros_depth_camera.so">
-                <cameraName>depth_camera</cameraName>
-            </plugin>
-        </sensor>
-    </gazebo>
+  <!-- Depth sensor mounted on the same link as the RGB camera -->
+  <gazebo reference="camera_rgb">
+    <sensor type="depth" name="camera_rgb_depth">
+      <pose>0 0 0 0 0 0</pose>
+      <visualize>true</visualize>
+      <always_on>true</always_on>
+      <update_rate>15</update_rate>
+
+      <camera name="rgbd_front_depth_intrinsics">
+        <!-- Match the color camera exactly for 1:1 pixel alignment -->
+        <horizontal_fov>1.089</horizontal_fov>
+        <image>
+          <format>R8G8B8</format>
+          <width>640</width>
+          <height>480</height>
+        </image>
+        <depth>
+          <image>
+            <width>640</width>
+            <height>480</height>
+            <!-- IMPORTANT: publish float depth so ROS gets 32FC1 (meters) -->
+            <!-- <format>L8</format> -->
+            <format>R_FLOAT32</format>
+          </image>
+          <range>10</range>
+        </depth>
+      </camera>
+
+      <plugin name="rgbd_depth_controller" filename="libgazebo_ros_depth_camera.so">
+        <!-- Unify under one RGB-D head name -->
+        <cameraName>rgbd_front</cameraName>
+        <!-- Proper optical frame (REP-103) shared with the color plugin -->
+        <frameName>rgbd_front_optical</frameName>
+
+        <!-- Avoid topic collisions with the color plugin -->
+        <!-- Depth camera still publishes an "image_raw"; send it to a depth/visual side-topic -->
+        <imageTopicName>depth/visual</imageTopicName>
+        <!-- Main depth image topic -->
+        <depthImageTopicName>depth/image_raw</depthImageTopicName>
+        <!-- Put its CameraInfo under /depth as well; the color plugin will own /camera_info -->
+        <cameraInfoTopicName>depth/camera_info</cameraInfoTopicName>
+        <pointCloudTopicName>depth/points</pointCloudTopicName>
+      </plugin>
+    </sensor>
+  </gazebo>
 </robot>
+
