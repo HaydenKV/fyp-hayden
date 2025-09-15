@@ -14,6 +14,9 @@
   <!-- Tracker -->
   <node pkg="qcar_visnav" type="cone_tracker_node" name="cone_tracker" output="screen"/>
 
+  <!-- Colour -->
+  <node pkg="qcar_visnav" type="cone_colour_node" name="cone_colour" output="screen"/>
+
   <!-- === Visualize raw cones === -->
   <node pkg="qcar_visnav" type="cones_viz_node" name="cone_markers_raw" output="screen"/>
 

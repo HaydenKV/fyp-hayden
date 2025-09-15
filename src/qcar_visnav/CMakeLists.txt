@@ -23,10 +23,14 @@ find_package(catkin REQUIRED COMPONENTS
   visualization_msgs
   message_generation
   topic_tools
+  image_transport
+  cv_bridge
+  image_geometry
 )
 
 # Eigen (header-only in Noetic; use include dirs instead of a target)
 find_package(Eigen3 REQUIRED)
+find_package(OpenCV REQUIRED)
 
 ## =========================================================
 ## Messages
@@ -60,6 +64,9 @@ catkin_package(
     tf2_geometry_msgs
     visualization_msgs
     message_runtime
+    image_transport
+    cv_bridge
+    image_geometry
   DEPENDS Eigen3
 )
 
@@ -70,12 +77,13 @@ include_directories(
   include
   ${catkin_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
 )
 
 ## =========================================================
 ## Sources / Targets
 ## =========================================================
-# --- Estimation EKF (existing minimal set)
+# --- Estimation EKF
 set(QCAR_VISNAV_SRCS
   src/estimation/model/kinematic_model.cpp
   src/estimation/ekf/ekf_core.cpp
@@ -130,6 +138,20 @@ target_link_libraries(cone_tracker_node
   ${catkin_LIBRARIES}
 )
 
+# -- colour detection node
+add_executable(cone_colour_node
+  src/perception/cone_colour_node.cpp
+)
+add_dependencies(cone_colour_node
+  ${${PROJECT_NAME}_EXPORTED_TARGETS}
+  ${catkin_EXPORTED_TARGETS}
+)
+target_link_libraries(cone_colour_node
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBS}
+)
+
+
 # --- SLAM (FastSLAM2) node
 set(SLAM_SRCS
   src/slam/fastslam2.cpp
@@ -173,6 +195,7 @@ install(TARGETS
   cone_tracker_node
   slam_node
   fastslam2_viz_node
+  cone_colour_node
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -203,5 +226,6 @@ install(DIRECTORY config/
 ## =========================================================
 catkin_install_python(PROGRAMS
   scripts/simple_forward_backward_test.py
+  scripts/show_rgbd.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

@@ -16,7 +16,7 @@ DataAssociation::associateById(const Particle& p,
   std::unordered_map<int,int> lm_by_id;
   lm_by_id.reserve(p.map.size());
   for (int i = 0; i < (int)p.map.size(); ++i) {
-    if (p.map[i].id >= 0) lm_by_id[p.map[i].id] = i;
+    if (p.map[i].id > 0) lm_by_id[p.map[i].id] = i;
   }
 
   std::vector<bool> lm_used(p.map.size(), false);
