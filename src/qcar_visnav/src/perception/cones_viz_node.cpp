@@ -1,77 +1,99 @@
-// cones_vis_node.cpp
+// cones_viz_node.cpp
+//
+// Visualise raw and tracked cones with distinct colouring rules.
+//  - RAW  (/cones):        always grey
+//  - TRACKED (/cones_colored by default):
+//        color==0 -> green (unknown yet)
+//        color==1 -> blue
+//        color==2 -> yellow
+//        color==3 -> orange
+//
+// Publishes two MarkerArray topics:
+//   /cones_markers_raw
+//   /cones_markers_tracked
+
 #include <ros/ros.h>
 #include <qcar_visnav/ConeArray.h>
 #include <visualization_msgs/MarkerArray.h>
 #include <visualization_msgs/Marker.h>
-
 #include <cmath>
 #include <string>
-#include <sstream>
-#include <algorithm>
 
 struct VParams {
-  std::string cones_topic{"/cones"};
-  std::string markers_topic{"/cones_markers"};
-  double sphere_diam{0.25};
-  double text_scale{0.18};
-  double lifetime{0.0};     // seconds; 0 -> forever
-  bool   show_text{true};
-
-  // Handle TF timing for viz
-  bool   use_latest_tf{true};   // stamp markers at time 0 so RViz uses latest TF
-  double stamp_offset{0.0};     // optional offset (secs) if not using latest
+  // I/O topics
+  std::string raw_cones_topic{"/cones"};
+  std::string tracked_cones_topic{"/cones_colored"};   // default updated
+  std::string markers_topic_raw{"/cones_markers_raw"};
+  std::string markers_topic_tracked{"/cones_markers_tracked"};
 
   // Styling
-  bool   override_color{false};
-  float  cr{0.10f}, cg{0.80f}, cb{0.20f}, ca{1.0f}; // default green-ish
-  std::string label_mode{"stats"}; // "stats" or "id"
+  double sphere_diam_raw{0.25};
+  double sphere_diam_tracked{0.22};
+  double text_scale{0.18};
+  double lifetime{0.0};
+  bool   show_text{true};
+  std::string label_mode{"id"}; // "stats" or "id"
 
-  // Layering (lift to draw on top of others)
-  double z_offset{0.0};         // NEW: small lift for this instance
+  // TF stamping strategy
+  bool   use_latest_tf{true};
+  double stamp_offset{0.0};
+
+  // Vertical offsets so layers don't z-fight in RViz
+  double z_offset_raw{0.00};
+  double z_offset_tracked{0.10};
 } PV;
 
-static ros::Publisher g_pub;
+static ros::Publisher g_pub_raw;
+static ros::Publisher g_pub_trk;
 
-static void parseRGBA(const std::string& s, float &r, float &g, float &b, float &a) {
-  std::istringstream iss(s);
-  float rr=1.f, gg=1.f, bb=1.f, aa=1.f;
-  iss >> rr >> gg >> bb;
-  if (iss) iss >> aa;
-  r = rr; g = gg; b = bb; a = aa;
+static inline void setGrey(visualization_msgs::Marker& m)   { m.color.r=0.85; m.color.g=0.85; m.color.b=0.85; m.color.a=0.95; }
+static inline void setGreen(visualization_msgs::Marker& m)  { m.color.r=0.10; m.color.g=0.90; m.color.b=0.20; m.color.a=0.95; }
+static inline void setBlue(visualization_msgs::Marker& m)   { m.color.r=0.15; m.color.g=0.35; m.color.b=1.00; m.color.a=0.95; }
+static inline void setYellow(visualization_msgs::Marker& m) { m.color.r=1.00; m.color.g=0.85; m.color.b=0.00; m.color.a=0.95; }
+static inline void setOrange(visualization_msgs::Marker& m) { m.color.r=1.00; m.color.g=0.40; m.color.b=0.00; m.color.a=0.95; }
+
+static void fillText(visualization_msgs::Marker& t, const qcar_visnav::Cone& c)
+{
+  if (PV.label_mode == "stats") {
+    const double sig_r = std::sqrt(std::max(0.0, c.r_var));
+    std::stringstream ss; ss.setf(std::ios::fixed); ss.precision(2);
+    ss << "r=" << c.range << "  σr=" << sig_r;
+    t.text = ss.str();
+  } else {
+    t.text = "#" + std::to_string(c.id);
+  }
 }
 
-static void conesCb(const qcar_visnav::ConeArray::ConstPtr& msg)
+static void buildMarkers(const qcar_visnav::ConeArray::ConstPtr& msg,
+                         bool is_tracked,
+                         visualization_msgs::MarkerArray& out)
 {
-  visualization_msgs::MarkerArray arr;
-  arr.markers.reserve(msg->cones.size() * (PV.show_text ? 2 : 1));
+  out.markers.clear();
 
-  const std::string ns_pts  = "cones_centers";
-  const std::string ns_text = "cones_labels";
-  int id = 0;
+  const std::string ns_pts  = is_tracked ? "cones_tracked_centers" : "cones_raw_centers";
+  const std::string ns_text = is_tracked ? "cones_tracked_labels"  : "cones_raw_labels";
 
-  // Use latest TF (stamp=0) to avoid extrapolation in RViz
   const ros::Time viz_stamp = PV.use_latest_tf
       ? ros::Time(0)
       : (msg->header.stamp + ros::Duration(PV.stamp_offset));
 
-  // Wipe existing markers in both namespaces
+  // delete-all per namespace
   {
     visualization_msgs::Marker wipe;
     wipe.header.frame_id = msg->header.frame_id;
     wipe.header.stamp    = viz_stamp;
-    wipe.action = visualization_msgs::Marker::DELETEALL;
-
-    wipe.ns = ns_pts;  wipe.id = 0; arr.markers.push_back(wipe);
-    wipe.ns = ns_text; wipe.id = 0; arr.markers.push_back(wipe);
+    wipe.action          = visualization_msgs::Marker::DELETEALL;
+    wipe.ns = ns_pts;  wipe.id = 0; out.markers.push_back(wipe);
+    wipe.ns = ns_text; wipe.id = 0; out.markers.push_back(wipe);
   }
 
+  int id = 0;
   for (const auto& c : msg->cones)
   {
-    // polar -> XY in the same frame as the message (lidar)
     const double x = c.range * std::cos(c.bearing);
     const double y = c.range * std::sin(c.bearing);
 
-    // ---------- sphere ----------
+    // sphere
     visualization_msgs::Marker m;
     m.header.frame_id = msg->header.frame_id;
     m.header.stamp    = viz_stamp;
@@ -79,33 +101,27 @@ static void conesCb(const qcar_visnav::ConeArray::ConstPtr& msg)
     m.id   = ++id;
     m.type = visualization_msgs::Marker::SPHERE;
     m.action = visualization_msgs::Marker::ADD;
-
     m.pose.position.x = x;
     m.pose.position.y = y;
-    m.pose.position.z = PV.z_offset;       // <— lift this layer if desired
+    m.pose.position.z = is_tracked ? PV.z_offset_tracked : PV.z_offset_raw;
     m.pose.orientation.w = 1.0;
+    m.scale.x = m.scale.y = m.scale.z = is_tracked ? PV.sphere_diam_tracked : PV.sphere_diam_raw;
 
-    m.scale.x = PV.sphere_diam;
-    m.scale.y = PV.sphere_diam;
-    m.scale.z = PV.sphere_diam;
-
-    if (PV.override_color) {
-      m.color.r = PV.cr; m.color.g = PV.cg; m.color.b = PV.cb; m.color.a = PV.ca;
+    if (!is_tracked) {
+      setGrey(m);
     } else {
-      // color by cone.color: 0=grey, 1=blue, 2=yellow, 3=orange
-      float r=0.85f, g=0.85f, b=0.85f, a=0.95f;
       switch (c.color) {
-        case 1: r=0.15f; g=0.35f; b=1.00f; break; // blue
-        case 2: r=1.00f; g=0.85f; b=0.00f; break; // yellow
-        case 3: r=1.00f; g=0.40f; b=0.00f; break; // orange
-        default: break;                           // grey
+        case 1: setBlue(m);   break;
+        case 2: setYellow(m); break;
+        case 3: setOrange(m); break;
+        case 0:
+        default: setGreen(m); break;
       }
-      m.color.r = r; m.color.g = g; m.color.b = b; m.color.a = a;
     }
     m.lifetime = ros::Duration(PV.lifetime);
-    arr.markers.push_back(m);
+    out.markers.push_back(m);
 
-    // ---------- text ----------
+    // text
     if (PV.show_text) {
       visualization_msgs::Marker t;
       t.header.frame_id = msg->header.frame_id;
@@ -114,63 +130,61 @@ static void conesCb(const qcar_visnav::ConeArray::ConstPtr& msg)
       t.id   = ++id;
       t.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
       t.action = visualization_msgs::Marker::ADD;
-
       t.pose.position.x = x;
       t.pose.position.y = y;
-      t.pose.position.z = PV.z_offset + 0.05;   // keep text above the sphere
-
+      t.pose.position.z = (is_tracked ? PV.z_offset_tracked : PV.z_offset_raw) + 0.05;
       t.scale.z = PV.text_scale;
-      t.color.r = 1.0f; t.color.g = 1.0f; t.color.b = 1.0f; t.color.a = 0.9f;
-
-      if (PV.label_mode == "id") {
-        t.text = "#" + std::to_string(c.id);
-      } else { // "stats"
-        const double sig_r = std::sqrt(std::max(0.0, c.r_var));
-        auto r_str  = std::to_string(c.range);  r_str  = r_str.substr(0, 4);
-        auto sr_str = std::to_string(sig_r);    sr_str = sr_str.substr(0, 4);
-        t.text = "r=" + r_str + "  σr=" + sr_str;
-      }
-
+      t.color.r = 1.0; t.color.g = 1.0; t.color.b = 1.0; t.color.a = 0.9;
+      fillText(t, c);
       t.lifetime = ros::Duration(PV.lifetime);
-      arr.markers.push_back(t);
+      out.markers.push_back(t);
     }
   }
+}
 
-  g_pub.publish(arr);
-  ROS_INFO_STREAM_THROTTLE(1.0, "[cones_vis] cones=" << msg->cones.size()
-                           << " markers_pub=" << arr.markers.size());
+static void rawCb(const qcar_visnav::ConeArray::ConstPtr& msg)
+{
+  visualization_msgs::MarkerArray arr;
+  buildMarkers(msg, /*is_tracked=*/false, arr);
+  g_pub_raw.publish(arr);
+}
+
+static void trackedCb(const qcar_visnav::ConeArray::ConstPtr& msg)
+{
+  visualization_msgs::MarkerArray arr;
+  buildMarkers(msg, /*is_tracked=*/true, arr);
+  g_pub_trk.publish(arr);
 }
 
 int main(int argc, char** argv)
 {
-  ros::init(argc, argv, "cones_vis");
+  ros::init(argc, argv, "cones_viz");
   ros::NodeHandle nh, pnh("~");
 
-  pnh.param("cones_topic",   PV.cones_topic,   PV.cones_topic);
-  pnh.param("markers_topic", PV.markers_topic, PV.markers_topic);
-  pnh.param("sphere_diam",   PV.sphere_diam,   PV.sphere_diam);
-  pnh.param("text_scale",    PV.text_scale,    PV.text_scale);
-  pnh.param("lifetime",      PV.lifetime,      PV.lifetime);
-  pnh.param("show_text",     PV.show_text,     PV.show_text);
+  pnh.param("raw_cones_topic",       PV.raw_cones_topic,       PV.raw_cones_topic);
+  pnh.param("tracked_cones_topic",   PV.tracked_cones_topic,   PV.tracked_cones_topic);
+  pnh.param("markers_topic_raw",     PV.markers_topic_raw,     PV.markers_topic_raw);
+  pnh.param("markers_topic_tracked", PV.markers_topic_tracked, PV.markers_topic_tracked);
+
+  pnh.param("sphere_diam_raw",     PV.sphere_diam_raw,     PV.sphere_diam_raw);
+  pnh.param("sphere_diam_tracked", PV.sphere_diam_tracked, PV.sphere_diam_tracked);
+  pnh.param("text_scale",          PV.text_scale,          PV.text_scale);
+  pnh.param("lifetime",            PV.lifetime,            PV.lifetime);
+  pnh.param("show_text",           PV.show_text,           PV.show_text);
+  pnh.param("label_mode",          PV.label_mode,          PV.label_mode);
+
   pnh.param("use_latest_tf", PV.use_latest_tf, PV.use_latest_tf);
   pnh.param("stamp_offset",  PV.stamp_offset,  PV.stamp_offset);
 
-  pnh.param("override_color", PV.override_color, PV.override_color);
-  std::string rgba = "0.10 0.80 0.20 1.0";
-  pnh.param("rgba", rgba, rgba);
-  parseRGBA(rgba, PV.cr, PV.cg, PV.cb, PV.ca);
-  pnh.param("label_mode", PV.label_mode, PV.label_mode); // "stats" or "id"
+  pnh.param("z_offset_raw",     PV.z_offset_raw,     PV.z_offset_raw);
+  pnh.param("z_offset_tracked", PV.z_offset_tracked, PV.z_offset_tracked);
 
-  pnh.param("z_offset", PV.z_offset, PV.z_offset);       // NEW
+  g_pub_raw = nh.advertise<visualization_msgs::MarkerArray>(PV.markers_topic_raw, 1, false);
+  g_pub_trk = nh.advertise<visualization_msgs::MarkerArray>(PV.markers_topic_tracked, 1, false);
 
-  g_pub = nh.advertise<visualization_msgs::MarkerArray>(PV.markers_topic, 1, false);
-  auto sub = nh.subscribe(PV.cones_topic, 1, &conesCb);
+  auto sub_raw = nh.subscribe(PV.raw_cones_topic, 1, &rawCb);
+  auto sub_trk = nh.subscribe(PV.tracked_cones_topic, 1, &trackedCb);
 
-  ROS_INFO_STREAM("[cones_vis] Subscribing to " << PV.cones_topic
-                  << " -> publishing MarkerArray on " << PV.markers_topic
-                  << " (override_color=" << (PV.override_color?"true":"false")
-                  << ", label_mode=" << PV.label_mode << ", use_latest_tf="
-                  << (PV.use_latest_tf?"true":"false") << ", z_offset=" << PV.z_offset << ")");
   ros::spin();
   return 0;
 }

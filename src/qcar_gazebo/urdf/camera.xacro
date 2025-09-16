@@ -5,11 +5,11 @@
         	<visualize>true</visualize>
             <update_rate>10</update_rate>
             <camera name="front">
-                <horizontal_fov>1.089</horizontal_fov>
+                <horizontal_fov>1.2043</horizontal_fov>
                 <image>
                 	<format>R8G8B8</format>
-                    <width>640</width>
-                    <height>480</height>
+                    <width>1280</width>
+                    <height>720</height>
                 </image>
             </camera>
             <plugin name="camera_controller" filename="libgazebo_ros_camera.so">
@@ -26,8 +26,8 @@
                 <horizontal_fov>1.089</horizontal_fov>
                 <image>
                     <format>R8G8B8</format>
-                    <width>640</width>
-                    <height>480</height>
+                    <width>1280</width>
+                    <height>720</height>
                 </image>
             </camera>
             <plugin name="camera_controller" filename="libgazebo_ros_camera.so">
@@ -44,8 +44,8 @@
                 <horizontal_fov>1.089</horizontal_fov>
                 <image>
                     <format>R8G8B8</format>
-                    <width>640</width>
-                    <height>480</height>
+                    <width>1280</width>
+                    <height>720</height>
                 </image>
             </camera>
             <plugin name="camera_controller" filename="libgazebo_ros_camera.so">
@@ -62,8 +62,8 @@
                 <horizontal_fov>1.089</horizontal_fov>
                 <image>
                     <format>R8G8B8</format>
-                    <width>640</width>
-                    <height>480</height>
+                    <width>1280</width>
+                    <height>720</height>
                 </image>
             </camera>
             <plugin name="camera_controller" filename="libgazebo_ros_camera.so">
@@ -82,8 +82,8 @@
         <horizontal_fov>1.089</horizontal_fov>
         <image>
           <format>R8G8B8</format>
-          <width>640</width>
-          <height>480</height>
+          <width>1280</width>
+          <height>720</height>
         </image>
       </camera>
       <plugin name="rgbd_color_controller" filename="libgazebo_ros_camera.so">

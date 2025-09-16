@@ -1,11 +1,11 @@
 <launch>
-  <!-- Sim time -->
+  <!-- Use simulation clock -->
   <param name="use_sim_time" value="true"/>
 
-  <!-- EKF / world bring-up -->
+  <!-- Sim + EKF -->
   <include file="$(find qcar_visnav)/launch/Track1ExampleEKF.launch"/>
 
-  <!-- Load ALL perception + tracker + viz params (namespaced in YAML) -->
+  <!-- Perception params -->
   <rosparam file="$(find qcar_visnav)/config/perception.yaml" command="load"/>
 
   <!-- Detector -->
@@ -14,13 +14,23 @@
   <!-- Tracker -->
   <node pkg="qcar_visnav" type="cone_tracker_node" name="cone_tracker" output="screen"/>
 
-  <!-- RAW cones markers -->
-  <node pkg="qcar_visnav" type="cones_viz_node" name="cone_markers_raw" output="screen"/>
+  <!-- Colour -->
+  <node pkg="qcar_visnav" type="cone_colour_node" name="cone_colour" output="screen"/>
 
-  <!-- TRACKED cones markers -->
-  <node pkg="qcar_visnav" type="cones_viz_node" name="cone_markers_tracked" output="screen"/>
+  <!-- Visualize cones (one instance publishes both RAW and TRACKED layers) -->
+  <node pkg="qcar_visnav" type="cones_viz_node" name="cones_viz" output="screen">
+    <param name="raw_cones_topic"       value="/cones"/>
+    <param name="markers_topic_raw"     value="/cones_markers_raw"/>
 
-  <!--<node pkg="rviz" type="rviz" name="rviz" args="-d $(find qcar_visnav)/rviz/perception_track1.rviz"/>-->
+    <!-- TRACKED layer (use the colored topic) -->
+    <param name="tracked_cones_topic"   value="/cones_colored"/>
+    <param name="markers_topic_tracked" value="/cones_markers_tracked"/>
+
+    <param name="label_mode"            value="id"/>
+    <param name="use_latest_tf"         value="true"/>
+    <param name="z_offset_tracked"      value="0.10"/>
+  </node>
+
+  <!-- RViz (loads our config which already shows the debug image) -->
   <node pkg="rviz" type="rviz" name="rviz" args="-d $(find qcar_visnav)/rviz/perception_track1.rviz"/>
-
 </launch>

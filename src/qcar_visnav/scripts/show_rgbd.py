@@ -160,4 +160,31 @@ class RGBDViewer:
         try:
             # For depth, pass through and convert based on encoding
             depth_raw = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')
-            depth_m = self._depth_to_meters(depth_raw, dep_
+            depth_m = self._depth_to_meters(depth_raw, depth_msg.encoding)
+        except Exception as e:
+            rospy.logerr_throttle(1.0, "Depth cv_bridge error: %s", str(e))
+            return
+
+        # Build depth colormap
+        depth_cm = self._colormap_depth(depth_m, min_m=min_m, max_m=max_m)
+
+        # Compose and display
+        vis = self._draw_overlays(color_bgr, depth_cm, depth_m, color_msg.encoding, depth_msg.encoding)
+        cv2.imshow(self.window_name, vis)
+
+        # Handle key
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            rospy.signal_shutdown("User pressed q")
+
+    def spin(self):
+        rospy.spin()
+        try:
+            cv2.destroyAllWindows()
+        except:
+            pass
+
+if __name__ == "__main__":
+    rospy.init_node("rgbd_front_viewer", anonymous=True)
+    node = RGBDViewer()
+    node.spin()

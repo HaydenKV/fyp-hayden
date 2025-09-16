@@ -3,11 +3,13 @@ Panels:
     Name: Displays
   - Class: rviz/Views
     Name: Views
+
 Visualization Manager:
   Global Options:
     Background Color: 48; 48; 48
     Fixed Frame: odom
     Frame Rate: 30
+
   Displays:
     - Class: rviz/TF
       Name: TF
@@ -32,14 +34,14 @@ Visualization Manager:
       Decay Time: 0
       Selectable: true
 
-    # RAW cones -> spheres
+    # RAW cones
     - Class: rviz/MarkerArray
       Name: Cones (RAW)
       Enabled: true
       Marker Topic: /cones_markers_raw
       Queue Size: 10
 
-    # TRACKED cones -> smaller spheres, different color (via the helper below)
+    # TRACKED cones (colored)
     - Class: rviz/MarkerArray
       Name: Cones (TRACKED)
       Enabled: true
@@ -48,6 +50,19 @@ Visualization Manager:
 
     - Class: rviz/Grid
       Enabled: true
+
+    # === AUTO-OPEN debug image ===
+    # This shows the annotated image from cone_colour without any manual steps.
+    - Class: rviz/Image
+      Name: Cone Colour (debug)
+      Enabled: true
+      Image Topic: /cone_colour/debug_image
+      Queue Size: 2
+      Normalize Range: true
+      Min Value: 0
+      Max Value: 255
+      Median window: 5
+      Zoom Factor: 1
 
   Tools:
     - Class: rviz/Interact

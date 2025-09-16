@@ -10,15 +10,15 @@
 
       <camera name="rgbd_front_depth_intrinsics">
         <!-- Match the color camera exactly for 1:1 pixel alignment -->
-        <horizontal_fov>1.089</horizontal_fov>
+        <horizontal_fov>1.5184</horizontal_fov>
         <image>
           <format>R8G8B8</format>
-          <width>640</width>
+          <width>848</width>
           <height>480</height>
         </image>
         <depth>
           <image>
-            <width>640</width>
+            <width>848</width>
             <height>480</height>
             <!-- IMPORTANT: publish float depth so ROS gets 32FC1 (meters) -->
             <!-- <format>L8</format> -->

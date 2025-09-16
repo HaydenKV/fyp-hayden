@@ -264,6 +264,16 @@
 	    <child link="camera_rgb"/>
   	</joint>
     <link name="camera_rgb"/>
+    <!-- ROS optical frame for the front RGBD camera
+         REP 105: Z forward, X right, Y down -->
+    <link name="rgbd_front_optical"/>
+    <joint name="rgbd_front_optical_joint" type="fixed">
+      <parent link="camera_rgb"/>
+      <child link="rgbd_front_optical"/>
+      <!-- Rotate camera_rgb into optical convention:
+           R = RotX(-90deg) * RotZ(-90deg) -->
+      <origin xyz="0 0 0" rpy="-1.57079632679 0 -1.57079632679"/>
+    </joint>
 
     <joint name="camera_csi_front_joint" type="fixed">
         <!-- <axis xyz="0 1 0" /> -->
