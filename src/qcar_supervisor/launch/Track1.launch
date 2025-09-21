@@ -1,6 +1,7 @@
 <launch>
   <!-- ================= Robot & Gazebo Setup ================= -->
-  <!-- Initial pose -->
+
+  <!-- Initial pose of the QCar in the world -->
   <arg name="x"     default="-4.3"/>
   <arg name="y"     default="3"/>
   <arg name="z"     default="0"/>
@@ -8,58 +9,77 @@
   <arg name="pitch" default="0"/>
   <arg name="yaw"   default="-3.14"/>
 
-  <!-- URDF to Parameter Server -->
+  <!-- Ensure all nodes use simulated time from Gazebo -->
+  <param name="/use_sim_time" value="true"/>
+
+  <!-- Load Gazebo world and start simulation unpaused at t=60?? -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(find qcar_gazebo)/worlds/Track1.world"/>
+    <arg name="gui"         value="true"/>
+    <arg name="verbose"     value="true"/>
+    <arg name="paused"      value="false"/> <!-- Start simulation immediately -->
+  </include>
+
+  <!-- Load QCar URDF into the parameter server -->
   <param name="robot_description"
          command="$(find xacro)/xacro $(find qcar_gazebo)/urdf/qcar_model.xacro"/>
 
-  <!-- Control plugin params -->
+  <!-- Spawn QCar model into Gazebo using the URDF -->
+  <node pkg="gazebo_ros" type="spawn_model" name="spawn_qcar" output="screen"
+        args="-urdf -param robot_description -model qcar
+              -x $(arg x) -y $(arg y) -z $(arg z)
+              -R $(arg roll) -P $(arg pitch) -Y $(arg yaw)"/>
+
+<!-- ================= Force Gazebo to reset simulation time ================= -->
+  <!-- This ensures Gazebo starts at t=60??? by resetting physics and clock -->
+  <node pkg="gazebo_ros" type="gazebo" name="gazebo_reset"
+        args="-r" output="screen"/>
+
+  <!-- ================= Control & Guidance ================= -->
+
+  <!-- Load control plugin parameters -->
   <rosparam file="$(find qcar_controlplugin)/config/qcar_controlplugin.yaml"
             command="load"/>
-  <!-- Guidance computes the next desired velocities -->
+
+  <!-- Guidance node: computes desired velocities -->
   <node name="guidance_node"
         pkg="qcar_guidance"
         type="example_guidance_node.py"
         output="screen"/>
 
-  <!-- Control turns the guidance output into a Twist on /cmd_vel -->
+  <!-- Control node: converts guidance output to /cmd_vel -->
   <node name="control_node"
         pkg="qcar_control"
         type="example_control_node"
         output="screen"/>
 
-  <!-- Joint State & TF -->
+  <!-- ================= Joint State & TF ================= -->
+
+  <!-- Publishes joint states for visualization -->
   <node pkg="joint_state_publisher" type="joint_state_publisher"
         name="joint_state_publisher"/>
+
+  <!-- Publishes TF transforms from joint states -->
   <node pkg="robot_state_publisher" type="robot_state_publisher"
         name="robot_state_publisher" output="screen">
     <remap from="/joint_states" to="/qcar/joint_states"/>
   </node>
-  
-  <!-- Velocity EKF VISNAV-->
-  
+
+  <!-- ================= Velocity EKF (VISNAV) ================= -->
+
+  <!-- EKF node for velocity estimation -->
   <node pkg="qcar_visnav"
         type="ekf_node"
         name="velocity_ekf"
         output="screen">
     <rosparam file="$(find qcar_visnav)/config/ekf.yaml" command="load"/>
     <remap from="/joint_states" to="/qcar/joint_states"/>
+    <remap from="/imu" to="/imu_faulty"/> <!-- Use fault-injected IMU -->
   </node>
- 
 
-  <!-- Gazebo world -->
-  <include file="$(find gazebo_ros)/launch/empty_world.launch">
-    <arg name="world_name" value="$(find qcar_gazebo)/worlds/Track1.world"/>
-    <arg name="gui"         value="true"/>
-    <arg name="verbose"     value="true"/>
-  </include>
+  <!-- ================= Controller Spawner ================= -->
 
-  <!-- Spawn QCar model -->
-  <node pkg="gazebo_ros" type="spawn_model" name="spawn_qcar" output="screen"
-        args="-urdf -param robot_description -model qcar
-              -x $(arg x) -y $(arg y) -z $(arg z)
-              -R $(arg roll) -P $(arg pitch) -Y $(arg yaw)"/>
-
-  <!-- Controllers -->
+  <!-- Spawns QCar controllers under the qcar namespace -->
   <group ns="qcar">
     <node pkg="controller_manager"
           type="spawner"
@@ -68,28 +88,33 @@
           output="screen"/>
   </group>
 
-  <!-- ================= IMU Smoothing Node ================= -->
-  <!-- <node pkg="qcar_supervisor" type="smooth_imu_node" name="smooth_imu" output="screen">
-    <param name="alpha" value="0.5"/>
-  </node> -->
-
   <!-- ================= Supervisory JMF Node ================= -->
-  <!-- load all JMF parameters into the global namespace -->
-  <!-- loads Q, Pi, model_length -->
+
+  <!-- Supervisory estimator using Jump-Markov Filter -->
   <node pkg="qcar_supervisor"
         type="sup_jmf_node"
         name="sup_jmf_node"
         output="screen">
-  <!-- load jmf params into this node's namespace -->
-    <rosparam file="$(find qcar_supervisor)/config/jmf.yaml"
-              command="load"/>
-    <!-- <remap from="/imu" to="/imu_smoothed"/> -->
+    <!-- Load JMF parameters into this node's namespace -->
+    <rosparam file="$(find qcar_supervisor)/config/jmf.yaml" command="load"/>
+    <remap from="/imu" to="/imu_faulty"/> <!-- Use fault-injected IMU -->
   </node>
 
+  <!-- ================= Unit Test IMU Fault Injection Node ================= -->
+
+  <!-- Injects faults into the IMU stream during defined time windows -->
+  <node pkg="qcar_supervisor"
+        type="unit_test_imu_fault_node"
+        name="timed_faulty_imu_node"
+        output="screen"/>
+
   <!-- ================= Mode-Probability Plotter ================= -->
+
+  <!-- Live plotter for mode probabilities from the JMF -->
   <node pkg="qcar_supervisor"
         type="plot_mode_probs.py"
         name="mode_probability_plotter"
         output="screen"
         respawn="false"/>
+
 </launch>

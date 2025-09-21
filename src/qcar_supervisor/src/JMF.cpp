@@ -1,10 +1,37 @@
+// src/JMF.cpp
 #include "qcar_supervisor/JMF.h"
+#include "qcar_supervisor/ekf/extended_kalman_filter.h"
+#include "qcar_supervisor/measurement_accel/measurement_accel.h"
 #include <algorithm>
 #include <numeric>
 #include <cmath>
 #include <stdexcept>
+#include <vector>
+#include <Eigen/Cholesky>
+#include <ros/ros.h>  // for ROS_INFO_STREAM
 
 namespace qcar_nav {
+  // Helper: log Gaussian density for 2D (innovation y, covariance S)
+inline double logGaussian(const Eigen::Vector2d& y, const Eigen::Matrix2d& S) {
+  // Cholesky (LLT) for 2x2 positive-definite S
+  Eigen::LLT<Eigen::Matrix2d> llt(S);
+  if (llt.info() != Eigen::Success) {
+    // tiny jitter if needed
+    Eigen::Matrix2d S_eps = S + 1e-9 * Eigen::Matrix2d::Identity();
+    llt.compute(S_eps);
+  }
+  Eigen::Matrix2d L = llt.matrixL();
+
+  // quad form: yᵀ S⁻¹ y  via solves
+  Eigen::Vector2d v = llt.solve(y);
+  double quad = v.squaredNorm();
+
+  // log|S| from Cholesky: logdet = 2 * (log L(0,0) + log L(1,1))
+  double logdetS = 2.0 * (std::log(L(0,0)) + std::log(L(1,1)));
+
+  constexpr double LOG_2PI = 1.8378770664093453; // log(2π)
+  return -0.5 * (quad + logdetS + 2.0 * LOG_2PI);
+}
 
 JumpMarkovFilter::JumpMarkovFilter(int max_components)
   : max_components_(max_components) {}
@@ -21,11 +48,8 @@ void JumpMarkovFilter::step(double dt,
                             const KinematicModel::StateVec& dxdt,
                             const KinematicModel::StateMat& ddxdtdx,
                             double gravity,
-                            double vel_meas,
-                            double gyro_meas,
-                            const TransitionModel& T_acc,
-                            const TransitionModel& T_vel) {
-  expandComponents(dt, input, dxdt, ddxdtdx, gravity, vel_meas, gyro_meas, T_acc, T_vel);
+                            const TransitionModel& T_acc) {
+  expandComponents(dt, input, dxdt, ddxdtdx, gravity, T_acc);
   normalizeWeights();
   reduceComponents();
 }
@@ -35,83 +59,105 @@ void JumpMarkovFilter::expandComponents(double dt,
                                         const KinematicModel::StateVec& dxdt,
                                         const KinematicModel::StateMat& ddxdtdx,
                                         double gravity,
-                                        double vel_meas,
-                                        double gyro_meas,
-                                        const TransitionModel& T_acc,
-                                        const TransitionModel& T_vel) {
+                                        const TransitionModel& T_acc)
+{
   std::vector<JmfComponent> new_components;
-
-  Eigen::Matrix2d T_acc_dt = T_acc.getTransition(dt);
-  Eigen::Matrix2d T_vel_dt = T_vel.getTransition(dt);
+  Eigen::Matrix2d T_acc_dt = T_acc.getTransition(dt);  // T(i,j) = Pr(z_k=i | z_{k-1}=j)
 
   for (const auto& comp : components_) {
-    for (int acc_status = 1; acc_status <= 2; ++acc_status) {
-      for (int vel_status = 1; vel_status <= 2; ++vel_status) {
-        SensorStatus new_status{acc_status, vel_status};
+    // For each previous component j, expand over all current accel modes i ∈ {1,2}
+    for (int acc_status = ACC_HEALTHY; acc_status <= ACC_FAULTY; ++acc_status) {
+      // CHANGE: correct indexing — use T(i,j), not T(j,i)
+      const int i = acc_status;           // 0 or 1
+      const int j = comp.status.acc;      // 0 or 1
+      double p_acc = T_acc_dt(i, j);
+      if (p_acc <= 0.0) p_acc = 1e-15;                 // numerical hygiene
+      double log_trans = std::log(p_acc);
 
-        double p_acc = T_acc_dt(comp.status.acc - 1, acc_status - 1);
-        double p_vel = T_vel_dt(comp.status.vel - 1, vel_status - 1);
-        double log_trans = std::log(p_acc) + std::log(p_vel);
+      // Set up EKF at the prior (comp.mean, comp.cov)
+      JmfComponent new_comp = comp;
+      new_comp.status.acc = acc_status;
 
-        JmfComponent new_comp = comp;
-        new_comp.status = new_status;
+      ExtendedKalmanFilter<KinematicModel::STATE_SIZE, KinematicModel::INPUT_SIZE> ekf;
+      ekf.setState(comp.mean, comp.cov);
 
-        // Measurement updates
-        double log_likelihood = 0.0;
+      MeasurementAccelerometer meas_acc;
 
-        // Accelerometer
-        MeasurementAccelerometer meas_acc;
-        Eigen::Vector2d h_acc = meas_acc.predict(comp.mean, input, dxdt, ddxdtdx, gravity);
-        auto H_acc = meas_acc.jacobian(comp.mean, ddxdtdx, gravity);
-        auto R_acc = meas_acc.noiseCovariance(acc_status);
-        Eigen::Vector2d y_acc(input.a_meas_x, input.a_meas_y);
-        Eigen::Vector2d innov_acc = y_acc - h_acc;
-        Eigen::Matrix2d S_acc = H_acc * comp.cov * H_acc.transpose() + R_acc;
-        log_likelihood += -0.5 * innov_acc.transpose() * S_acc.inverse() * innov_acc
-                          - 0.5 * std::log(S_acc.determinant());
+      // Build measurement model functors (as you had)
+      struct AccH {
+        const MeasurementAccelerometer* meas;
+        const KinematicModel::ModelInput* input;
+        const KinematicModel::StateVec* dxdt;
+        const KinematicModel::StateMat* ddxdtdx;
+        double g;
+        int acc_status;
+        Eigen::Matrix<double,2,1> operator()(const KinematicModel::StateVec& x) const {
+          return meas->predict(x, *input, *dxdt, *ddxdtdx, g, acc_status);
+        }
+      };
+      struct AccHjac {
+        const MeasurementAccelerometer* meas;
+        const KinematicModel::StateMat* ddxdtdx;
+        double g;
+        Eigen::Matrix<double,2,KinematicModel::STATE_SIZE>
+        operator()(const KinematicModel::StateVec& x) const {
+          return meas->jacobian(x, *ddxdtdx, g);
+        }
+      };
 
-        // Velocity
-        Eigen::VectorXd h_v = h_vel(comp.mean);
-        Eigen::MatrixXd H_v = H_vel();
-        Eigen::MatrixXd R_v = Eigen::MatrixXd::Identity(1,1) * (vel_status == 1 ? 0.01 : 0.5);
-        Eigen::VectorXd innov_v(1);
-        innov_v(0) = vel_meas - h_v(0);
-        Eigen::MatrixXd S_v = H_v * comp.cov * H_v.transpose() + R_v;
-        log_likelihood += -0.5 * innov_v.transpose() * S_v.inverse() * innov_v
-                          - 0.5 * std::log(S_v.determinant());
+      // Measured accel (z), mode-conditioned noise
+      Eigen::Matrix<double,2,1> z_acc;
+      z_acc << input.a_meas_x, input.a_meas_y;
+      Eigen::Matrix2d R_acc = meas_acc.noiseCovariance(acc_status);
 
-        // Gyro
-        KinematicModel model;
-        model.setParams(KinematicModel::ModelParams());
-        Eigen::VectorXd h_g = h_gyro(comp.mean, model.getParams());
-        Eigen::MatrixXd H_g = H_gyro(comp.mean, model.getParams());
-        Eigen::MatrixXd R_g = Eigen::MatrixXd::Identity(1,1) * 0.01;
-        Eigen::VectorXd innov_g(1);
-        innov_g(0) = gyro_meas - h_g(0);
-        Eigen::MatrixXd S_g = H_g * comp.cov * H_g.transpose() + R_g;
-        log_likelihood += -0.5 * innov_g.transpose() * S_g.inverse() * innov_g
-                          - 0.5 * std::log(S_g.determinant());
+      // ---------- MEASUREMENT EVIDENCE (log β) ----------
+      // CHANGE: compute innovation y and S at the PRIOR (comp) to form log β
+      Eigen::Matrix<double,2,1> zhat = AccH{&meas_acc,&input,&dxdt,&ddxdtdx,gravity,acc_status}(comp.mean);
+      Eigen::Matrix<double,2,KinematicModel::STATE_SIZE> H =
+          AccHjac{&meas_acc,&ddxdtdx,gravity}(comp.mean);
+      Eigen::Matrix<double,2,1> y = z_acc - zhat;
+      Eigen::Matrix2d S = H * comp.cov * H.transpose() + R_acc;
 
-        // EKF update (simple linear form)
-        Eigen::MatrixXd H_all(4, comp.mean.size());
-        H_all << H_acc, H_v, H_g;
-        Eigen::VectorXd innov_all(4);
-        innov_all << innov_acc, innov_v, innov_g;
-        Eigen::MatrixXd R_all(4, 4);
-        R_all.setZero();
-        R_all.block<2,2>(0,0) = R_acc;
-        R_all(2,2) = R_v(0,0);
-        R_all(3,3) = R_g(0,0);
-
-        Eigen::MatrixXd S = H_all * comp.cov * H_all.transpose() + R_all;
-        Eigen::MatrixXd K = comp.cov * H_all.transpose() * S.inverse();
-
-        new_comp.mean = comp.mean + K * innov_all;
-        new_comp.cov = (Eigen::MatrixXd::Identity(comp.mean.size(), comp.mean.size()) - K * H_all) * comp.cov;
-
-        new_comp.log_weight = comp.log_weight + log_trans + log_likelihood;
-        new_components.push_back(new_comp);
+      // Guard ill-conditioning
+      Eigen::LLT<Eigen::Matrix2d> lltS(S);
+      if (lltS.info() != Eigen::Success) {
+        // Fallback: add a small jitter
+        S += 1e-9 * Eigen::Matrix2d::Identity();
       }
+
+      // log β = log N(y;0,S)
+      double log_beta = logGaussian(y, S);            // helper below
+      if (!std::isfinite(log_beta)) {
+        // fallback: treat as extremely unlikely but finite
+        log_beta = -1e12;
+      }
+      // --- DIAG: sanity print once every ~1s ---
+      static double last_dbg = 0.0;
+      double now = ros::Time::now().toSec();   // include <ros/ros.h> at top of file if not present
+      if (now - last_dbg > 1.0) {
+        ROS_INFO_STREAM("[ACC "
+            << (acc_status == ACC_HEALTHY ? "HEALTHY" : "FAULTY")
+            << "] log_beta=" << log_beta
+            << "  trace(R)=" << R_acc.trace()
+            << "  T(i|j)=" << p_acc
+            << "  enum(H,F)=" << ACC_HEALTHY << "," << ACC_FAULTY);
+        last_dbg = now;
+      }
+
+      // ---------- EKF UPDATE (posterior mean/cov for this branch) ----------
+      ekf.update(z_acc,
+                 AccH{&meas_acc,&input,&dxdt,&ddxdtdx,gravity,acc_status},
+                 AccHjac{&meas_acc,&ddxdtdx,gravity},
+                 R_acc);
+      auto [x_upd, P_upd] = ekf.getState();
+      new_comp.mean = x_upd;
+      new_comp.cov  = P_upd;
+
+      // ---------- COMBINE PRIOR + EVIDENCE ----------
+      // CHANGE: add BOTH terms (log T + log β) to the new component weight
+      new_comp.log_weight = comp.log_weight + log_trans + log_beta;
+
+      new_components.push_back(new_comp);
     }
   }
 
@@ -119,24 +165,37 @@ void JumpMarkovFilter::expandComponents(double dt,
 }
 
 void JumpMarkovFilter::normalizeWeights() {
-  double max_log = components_.front().log_weight;
-  for (const auto& comp : components_) {
-    if (comp.log_weight > max_log) {
-      max_log = comp.log_weight;
-    }
+  // 1) get max log-weight
+  double max_log = -std::numeric_limits<double>::infinity();
+  for (const auto& c : components_) {
+    if (std::isfinite(c.log_weight) && c.log_weight > max_log) max_log = c.log_weight;
+  }
+  if (!std::isfinite(max_log)) {
+    // all bad — reset to uniform tiny but finite
+    const double uniform = -std::log(static_cast<double>(components_.size()));
+    for (auto& c : components_) c.log_weight = uniform;
+    return;
   }
 
-  double sum = 0.0;
-  for (auto& comp : components_) {
-    comp.log_weight = std::exp(comp.log_weight - max_log);
-    sum += comp.log_weight;
+  // 2) compute logsumexp = max_log + log(sum_i exp(logw_i - max_log))
+  double sum_exp = 0.0;
+  for (const auto& c : components_) {
+    if (std::isfinite(c.log_weight)) sum_exp += std::exp(c.log_weight - max_log);
   }
+  if (!(sum_exp > 0.0)) { // sum_exp is 0 or NaN
+    const double uniform = -std::log(static_cast<double>(components_.size()));
+    for (auto& c : components_) c.log_weight = uniform;
+    return;
+  }
+  const double lse = max_log + std::log(sum_exp);
 
-  for (auto& comp : components_) {
-    comp.log_weight /= sum;
-    comp.log_weight = std::log(comp.log_weight);
+  // 3) normalised log-weights: log p_i = logw_i - logsumexp
+  for (auto& c : components_) {
+    if (std::isfinite(c.log_weight)) c.log_weight -= lse;
+    else c.log_weight = -std::log(static_cast<double>(components_.size()));
   }
 }
+
 
 void JumpMarkovFilter::reduceComponents() {
   std::sort(components_.begin(), components_.end(),
@@ -158,19 +217,13 @@ KinematicModel::StateVec JumpMarkovFilter::getMAPEstimate() const {
 }
 
 std::vector<double> JumpMarkovFilter::getAccStatusMarginals() const {
-  std::vector<double> marginals(2, 0.0);
-  for (const auto& comp : components_) {
-    marginals[comp.status.acc - 1] += std::exp(comp.log_weight);
+  double pH = 0.0, pF = 0.0;
+  for (const auto& c : components_) {
+    const double w = std::exp(c.log_weight);
+    if (c.status.acc == ACC_HEALTHY) pH += w;
+    else if (c.status.acc == ACC_FAULTY) pF += w;
   }
-  return marginals;
-}
-
-std::vector<double> JumpMarkovFilter::getVelStatusMarginals() const {
-  std::vector<double> marginals(2, 0.0);
-  for (const auto& comp : components_) {
-    marginals[comp.status.vel - 1] += std::exp(comp.log_weight);
-  }
-  return marginals;
+  return {pH, pF};  // index 0: healthy, index 1: faulty
 }
 
 } // namespace qcar_nav

@@ -1,57 +1,45 @@
+// src/transition_model.cpp
 #include "qcar_supervisor/transition_model.h"
-#include <Eigen/Eigenvalues>
-#include <stdexcept>
+#include <Eigen/Eigenvalues>   // eigen-decomp (2x2 here)
+#include <algorithm>
 #include <cmath>
 
 namespace qcar_nav {
 
 void TransitionModel::setReferenceMatrix(const Eigen::Matrix2d& T_ref, double dt_ref) {
-  if ((T_ref.array() < 0.0).any()) {
-    throw std::invalid_argument("Transition matrix contains negative entries");
-  }
-  if (!T_ref.rowwise().sum().isApprox(Eigen::Vector2d::Ones(), 1e-6)) {
-    throw std::invalid_argument("Transition matrix rows must sum to 1");
-  }
-
-  T_ref_ = T_ref;
+  T_ref_  = T_ref;
   dt_ref_ = dt_ref;
 }
 
 Eigen::Matrix2d TransitionModel::getTransition(double dt) const {
-  if (dt <= 0.0) {
-    throw std::invalid_argument("Time step must be positive");
-  }
+  // Time-scale via fractional matrix power: T(dt) = (T_ref)^(dt/dt_ref)
+  const double alpha = (dt_ref_ > 0.0) ? (dt / dt_ref_) : 1.0;
 
-  // Compute T(dt) = T_ref ^ (dt / dt_ref)
-  double scale = dt / dt_ref_;
+  // Eigendecomposition (fine for 2x2 stochastic matrices)
+  Eigen::ComplexEigenSolver<Eigen::Matrix2d> ces(T_ref_);
+  Eigen::Matrix2cd V = ces.eigenvectors();
+  Eigen::Matrix2cd D = ces.eigenvalues().asDiagonal();
 
-  // Eigen decomposition: T_ref = V D V⁻¹
-  Eigen::EigenSolver<Eigen::Matrix2d> solver(T_ref_);
-  Eigen::Matrix2cd D = solver.eigenvalues().asDiagonal();
-  Eigen::Matrix2cd V = solver.eigenvectors();
-  Eigen::Matrix2cd V_inv = V.inverse();
-
-  // Raise eigenvalues to fractional power
-  for (int i = 0; i < 2; ++i) {
-    D(i, i) = std::pow(D(i, i), scale);
-  }
-
-  // Reconstruct T(dt)
-  Eigen::Matrix2cd T_dt_complex = V * D * V_inv;
-  Eigen::Matrix2d T_dt = T_dt_complex.real();
-
-  // Clip to [0, 1] and renormalize rows
-  for (int i = 0; i < 2; ++i) {
-    for (int j = 0; j < 2; ++j) {
-      T_dt(i, j) = std::clamp(T_dt(i, j), 0.0, 1.0);
+  // Raise eigenvalues to fractional power (avoid Unicode; use "lam")
+  for (int i = 0; i < D.rows(); ++i) {
+    std::complex<double> lam = D.diagonal()(i);
+    // Guard: clamp tiny values to 0 to avoid nans from pow(≈0, alpha)
+    if (std::abs(lam.real()) < 1e-15 && std::abs(lam.imag()) < 1e-15) {
+      lam = std::complex<double>(0.0, 0.0);
     }
-    double row_sum = T_dt.row(i).sum();
-    if (row_sum > 1e-6) {
-      T_dt.row(i) /= row_sum;
-    }
+    D.diagonal()(i) = std::pow(lam, alpha);
   }
 
-  return T_dt;
+  Eigen::Matrix2cd Tcd = V * D * V.inverse();
+  Eigen::Matrix2d  T   = Tcd.real();
+
+  // Hygiene: clip tiny negatives, ensure column-stochastic (columns sum to 1)
+  for (int j = 0; j < 2; ++j) {
+    for (int i = 0; i < 2; ++i) if (T(i, j) < 0.0) T(i, j) = 0.0;
+    double s = T.col(j).sum();
+    if (s > 1e-12) T.col(j) /= s;
+  }
+  return T;
 }
 
 } // namespace qcar_nav

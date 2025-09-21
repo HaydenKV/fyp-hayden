@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(qcar_supervisor)
+set(CMAKE_CXX_STANDARD 17)
 
 ## —————————————————————————————————————————————————————————————
 ## Find dependencies
@@ -94,8 +95,6 @@ add_library(jmf_lib
   src/JMF.cpp
   src/transition_model.cpp
   src/measurement_accel/measurement_accel.cpp
-  src/measurement_velocity.cpp
-  src/measurement_gyro.cpp
 )
 
 target_compile_definitions(jmf_lib PUBLIC
@@ -106,6 +105,14 @@ target_link_libraries(jmf_lib
   qcar_visnav_lib
   ${catkin_LIBRARIES}
   Eigen3::Eigen
+)
+
+## ————————————————————————————————————————————————————————————
+## Helper libriary folder
+include_directories(
+  include
+  include/qcar_supervisor/helpers
+  ${catkin_INCLUDE_DIRS}
 )
 
 ## —————————————————————————————————————————————————————————————
@@ -119,3 +126,6 @@ target_link_libraries(sup_jmf_node
   qcar_visnav_lib
   ${catkin_LIBRARIES}
 )
+## UNIT TEST IMU FAULT INJECTION NODE
+add_executable(unit_test_imu_fault_node src/nodes/unit_test_imu_fault_node.cpp)
+target_link_libraries(unit_test_imu_fault_node ${catkin_LIBRARIES})
