@@ -51,12 +51,45 @@ Visualization Manager:
     - Class: rviz/Grid
       Enabled: true
 
-    # === AUTO-OPEN debug image ===
-    # This shows the annotated image from cone_colour without any manual steps.
+    # === Existing combined debug image (front) ===
     - Class: rviz/Image
       Name: Cone Colour (debug)
       Enabled: true
       Image Topic: /cone_colour/debug_image
+      Queue Size: 2
+      Normalize Range: true
+      Min Value: 0
+      Max Value: 255
+      Median window: 5
+      Zoom Factor: 1
+
+    # === NEW: Per-camera annotated debug feeds ===
+    - Class: rviz/Image
+      Name: Cone Colour (front)
+      Enabled: true
+      Image Topic: /cone_colour/debug_front
+      Queue Size: 2
+      Normalize Range: true
+      Min Value: 0
+      Max Value: 255
+      Median window: 5
+      Zoom Factor: 1
+
+    - Class: rviz/Image
+      Name: Cone Colour (left)
+      Enabled: true
+      Image Topic: /cone_colour/debug_left
+      Queue Size: 2
+      Normalize Range: true
+      Min Value: 0
+      Max Value: 255
+      Median window: 5
+      Zoom Factor: 1
+
+    - Class: rviz/Image
+      Name: Cone Colour (right)
+      Enabled: true
+      Image Topic: /cone_colour/debug_right
       Queue Size: 2
       Normalize Range: true
       Min Value: 0

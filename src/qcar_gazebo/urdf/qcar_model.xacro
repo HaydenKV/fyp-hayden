@@ -263,37 +263,43 @@
 	    <parent link="base"/>
 	    <child link="camera_rgb"/>
   	</joint>
+  	
     <link name="camera_rgb"/>
-    <!-- ROS optical frame for the front RGBD camera
-         REP 105: Z forward, X right, Y down -->
     <link name="rgbd_front_optical"/>
     <joint name="rgbd_front_optical_joint" type="fixed">
-      <parent link="camera_rgb"/>
-      <child link="rgbd_front_optical"/>
-      <!-- Rotate camera_rgb into optical convention:
-           R = RotX(-90deg) * RotZ(-90deg) -->
-      <origin xyz="0 0 0" rpy="-1.57079632679 0 -1.57079632679"/>
+        <parent link="camera_rgb"/>
+        <child link="rgbd_front_optical"/>
+        <origin xyz="0 0 0" rpy="-1.57079632679 0 -1.57079632679"/>
     </joint>
 
+    <!-- CSI FRONT -->
     <joint name="camera_csi_front_joint" type="fixed">
-        <!-- <axis xyz="0 1 0" /> -->
-        <!-- <origin xyz=".2 0 0" rpy="0 0 0"/> -->
         <origin rpy="0 0 0" xyz="0.19236 -0.000475 0.093029"/>
-        <!-- <origin rpy="0 0 0" xyz="0 0 0"/> -->
         <parent link="base"/>
         <child link="camera_csi_front"/>
     </joint>
     <link name="camera_csi_front"/>
-
-    <joint name="camera_csi_right_joint" type="fixed">
-        <!-- <axis xyz="0 1 0" /> -->
-        <!-- <origin xyz=".2 0 0" rpy="0 0 0"/> -->
-        <origin rpy="0 0 -1.5708" xyz="0.12887 -0.06755 0.093029"/>
-        <!-- <origin rpy="0 0 0" xyz="0 0 0"/> -->
-        <parent link="base"/>
-        <child link="camera_csi_right"/>
+    <!-- Optical frame: REP 105 (Z forward, X right, Y down) -->
+    <link name="csi_front_optical"/>
+    <joint name="csi_front_optical_joint" type="fixed">
+        <parent link="camera_csi_front"/>
+        <child  link="csi_front_optical"/>
+        <origin xyz="0 0 0" rpy="-1.57079632679 0 -1.57079632679"/>
     </joint>
-    <link name="camera_csi_right"/>
+
+    <!-- CSI RIGHT -->
+    <joint name="camera_csi_right_joint" type="fixed">
+      <origin rpy="0 0 -1.5708" xyz="0.12887 -0.06755 0.093029"/>
+      <parent link="base"/>
+      <child link="camera_csi_right"/>
+     </joint>
+     <link name="camera_csi_right"/>
+     <link name="csi_right_optical"/>
+     <joint name="csi_right_optical_joint" type="fixed">
+       <parent link="camera_csi_right"/>
+       <child  link="csi_right_optical"/>
+       <origin xyz="0 0 0" rpy="-1.57079632679 0 -1.57079632679"/>
+     </joint>
 
     <joint name="camera_csi_back_joint" type="fixed">
         <!-- <axis xyz="0 1 0" /> -->
@@ -305,15 +311,19 @@
     </joint>
     <link name="camera_csi_back"/>
 
+    <!-- CSI LEFT -->
     <joint name="camera_csi_left_joint" type="fixed">
-        <!-- <axis xyz="0 1 0" /> -->
-        <!-- <origin xyz=".2 0 0" rpy="0 0 0"/> -->
-        <origin rpy="0 0 1.5708" xyz="0.12784 0.052497 0.093029"/>
-        <!-- <origin rpy="0 0 0" xyz="0 0 0"/> -->
-        <parent link="base"/>
-        <child link="camera_csi_left"/>
+      <origin rpy="0 0 1.5708" xyz="0.12784 0.052497 0.093029"/>
+      <parent link="base"/>
+      <child link="camera_csi_left"/>
     </joint>
     <link name="camera_csi_left"/>
+    <link name="csi_left_optical"/>
+    <joint name="csi_left_optical_joint" type="fixed">
+        <parent link="camera_csi_left"/>
+        <child  link="csi_left_optical"/>
+        <origin xyz="0 0 0" rpy="-1.57079632679 0 -1.57079632679"/>
+    </joint>
 
     <transmission name="body_lidar_tran">
         <type>>transmission_interface/SimpleTransmission</type>

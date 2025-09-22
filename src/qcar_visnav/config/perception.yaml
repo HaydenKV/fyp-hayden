@@ -30,24 +30,39 @@ cone_tracker:
   tf_use_latest: true
   debug: 1
 
-# ----- Colour classifier node -----
+# ----- Colour classifier node (multi-CSI) -----
 cone_colour:
   detections_topic: "/tracked_cones"
   output_topic:     "/cones_colored"
-  rgb_topic:        "/rgbd_front/image_raw"
-  depth_topic:      "/rgbd_front/depth/image_raw"
-  cam_info_topic:   "/rgbd_front/camera_info"
-  camera_frame:     "rgbd_front_optical"
-  use_depth_for_roi: true
-  max_image_age_s:  0.5
+
+  # Front / Left / Right image + camera info topics
+  rgb_topic_front:  "/csi_front/image_raw"
+  rgb_topic_left:   "/csi_left/image_raw"
+  rgb_topic_right:  "/csi_right/image_raw"
+
+  cam_info_front:   "/csi_front/camera_info"
+  cam_info_left:    "/csi_left/camera_info"
+  cam_info_right:   "/csi_right/camera_info"
+
+  # Camera frames (must exist in TF)
+  camera_frame_front: "csi_front_optical"
+  camera_frame_left:  "csi_left_optical"
+  camera_frame_right: "csi_right_optical"
+
+  # ROI sizing and timing
+  max_image_age_s:  0.25
   cone_width_m:     0.25
-  min_roi_px:       12
-  max_roi_px:       90
-  min_pixels_for_conf: 100
-  conf_floor:       0.05
+  min_roi_px:       16
+  max_roi_px:       96
+  min_pixels_for_conf: 120
+  conf_floor:       0.10
+
+  # HSV thresholds (tune if needed)
   hsv_blue_low:     [100, 150, 50]
   hsv_blue_high:    [130, 255, 255]
   hsv_yellow_low:   [18, 80, 80]
   hsv_yellow_high:  [35, 255, 255]
+
+  # Debug overlays
   debug:            1
   debug_publish_image: true

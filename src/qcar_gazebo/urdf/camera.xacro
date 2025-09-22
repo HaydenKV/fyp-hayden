@@ -1,19 +1,22 @@
 <?xml version='1.0'?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
-	 <gazebo reference="camera_csi_front">
+   <gazebo reference="camera_csi_front">
         <sensor type="camera" name="front_camera">
-        	<visualize>true</visualize>
+            <visualize>true</visualize>
             <update_rate>10</update_rate>
             <camera name="front">
                 <horizontal_fov>1.2043</horizontal_fov>
                 <image>
-                	<format>R8G8B8</format>
+                    <format>R8G8B8</format>
                     <width>1280</width>
                     <height>720</height>
                 </image>
             </camera>
-            <plugin name="camera_controller" filename="libgazebo_ros_camera.so">
-                <cameraName>front_camera</cameraName>
+            <plugin name="camera_controller_front" filename="libgazebo_ros_camera.so">
+                <cameraName>csi_front</cameraName>
+                <frameName>csi_front_optical</frameName>
+                <imageTopicName>image_raw</imageTopicName>
+                <cameraInfoTopicName>camera_info</cameraInfoTopicName>
             </plugin>
         </sensor>
     </gazebo>
@@ -30,8 +33,11 @@
                     <height>720</height>
                 </image>
             </camera>
-            <plugin name="camera_controller" filename="libgazebo_ros_camera.so">
-                <cameraName>right_camera</cameraName>
+            <plugin name="camera_controller_right" filename="libgazebo_ros_camera.so">
+                <cameraName>csi_right</cameraName>
+                <frameName>csi_right_optical</frameName>
+                <imageTopicName>image_raw</imageTopicName>
+                <cameraInfoTopicName>camera_info</cameraInfoTopicName>
             </plugin>
         </sensor>
     </gazebo>
@@ -48,8 +54,11 @@
                     <height>720</height>
                 </image>
             </camera>
-            <plugin name="camera_controller" filename="libgazebo_ros_camera.so">
-                <cameraName>left_camera</cameraName>
+            <plugin name="camera_controller_left" filename="libgazebo_ros_camera.so">
+                <cameraName>csi_left</cameraName>
+                <frameName>csi_left_optical</frameName>
+                <imageTopicName>image_raw</imageTopicName>
+                <cameraInfoTopicName>camera_info</cameraInfoTopicName>
             </plugin>
         </sensor>
     </gazebo>
@@ -66,19 +75,18 @@
                     <height>720</height>
                 </image>
             </camera>
-            <plugin name="camera_controller" filename="libgazebo_ros_camera.so">
+            <plugin name="camera_controller_back" filename="libgazebo_ros_camera.so">
                 <cameraName>back_camera</cameraName>
             </plugin>
         </sensor>
     </gazebo>
     
-    <!-- NEW: RGB stream for the RGB-D head on the same link as the depth sensor -->
+    <!-- RGB stream for the RGB-D head (unchanged) -->
   <gazebo reference="camera_rgb">
     <sensor type="camera" name="rgbd_front_color">
       <visualize>true</visualize>
       <update_rate>15</update_rate>
       <camera name="rgbd_front_color_intrinsics">
-        <!-- Match depth sensor settings 1:1 -->
         <horizontal_fov>1.211</horizontal_fov>
         <image>
           <format>R8G8B8</format>
@@ -87,17 +95,12 @@
         </image>
       </camera>
       <plugin name="rgbd_color_controller" filename="libgazebo_ros_camera.so">
-        <!-- Same head name as depth -->
         <cameraName>rgbd_front</cameraName>
-        <!-- Share the exact same optical frame -->
         <frameName>rgbd_front_optical</frameName>
-
-        <!-- Own the main color topics -->
         <imageTopicName>image_raw</imageTopicName>
         <cameraInfoTopicName>camera_info</cameraInfoTopicName>
       </plugin>
     </sensor>
   </gazebo>    
-    
-    
 </robot>
+
