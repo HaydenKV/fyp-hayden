@@ -79,7 +79,7 @@
       <update_rate>15</update_rate>
       <camera name="rgbd_front_color_intrinsics">
         <!-- Match depth sensor settings 1:1 -->
-        <horizontal_fov>1.089</horizontal_fov>
+        <horizontal_fov>1.211</horizontal_fov>
         <image>
           <format>R8G8B8</format>
           <width>1280</width>
