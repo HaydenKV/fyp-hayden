@@ -15,12 +15,9 @@
   <node pkg="qcar_visnav" type="cone_tracker_node" name="cone_tracker" output="screen"/>
 
   <!-- Colour: keep visualization behaviour identical, just swap to CSI inputs via YAML -->
-  <!-- IMPORTANT: Use the actual installed binary name here. 
-       If your CMake builds 'cone_colour_node', keep it like this.
-       If it builds 'cone_colour', change type to 'cone_colour'. -->
   <node pkg="qcar_visnav" type="cone_colour_node" name="cone_colour" output="screen"/>
 
-  <!-- Visualize cones (unchanged) -->
+  <!-- Visualize cones -->
   <node pkg="qcar_visnav" type="cones_viz_node" name="cones_viz" output="screen">
     <param name="raw_cones_topic"       value="/cones"/>
     <param name="markers_topic_raw"     value="/cones_markers_raw"/>

@@ -2,66 +2,82 @@
 # Perception + Tracking
 # =======================
 
+# 1) LiDAR clustering → /cones
 cone_detector:
-  detection: { mode: "clustering" }
+  detection: { mode: "clustering" }  # option to add in another method here i.e. circular hough
   lidar:     { min_range: 0.3, max_range: 17.0 }
-  seg:       { tau0: 0.12, tau_alpha: 0.03 }
+  seg:       { tau0: 0.12, tau_alpha: 0.03 }   # segmentation thresholds (tunable)
   cluster:   { eps: 0.25, min_cluster_size: 2, max_cluster_size: 40 }
-  noise:     { sigma_r: 0.07, sigma_theta_deg: 0.8 }
+  noise:     { sigma_r: 0.07, sigma_theta_deg: 0.8 }  # measurement noise model
   topics:    { lidar: "/scan", cones: "/cones" }
-  frame:     { lidar: "" }
-  # legacy flat keys (kept for node)
+  frame:     { lidar: "" }  # leave blank to use /scan frame
+  # legacy flat keys (still used by node)
   lidar_topic: "/scan"
   cones_topic: "/cones"
   lidar_frame: ""
   debug_print: 1
 
+# 2) Tracking → /tracked_cones
 cone_tracker:
   detections_topic: "/cones"
   tracks_topic:     "/tracked_cones"
   odom_frame:  "odom"
   base_frame:  "base_footprint"
-  gate_chi2:   7.38
-  init_hits:   2
-  max_misses:  8
-  init_cov:    0.25
-  q_xy:        0.03
-  r_scale:     1.1
-  tf_use_latest: true
+  gate_chi2:   7.38        # association gate (tunable)
+  init_hits:   2           # measurements to confirm a new track
+  max_misses:  8           # drop after this many misses
+  init_cov:    0.25        # initial covariance
+  q_xy:        0.03        # process noise
+  r_scale:     1.1         # measurement noise scale factor
+  tf_use_latest: true      # use latest TF to stabilize
   debug: 1
 
-# ----- Colour classifier node (multi-CSI) -----
+# 3) Colour classifier (multi-CSI) → /cones_colored
 cone_colour:
   detections_topic: "/tracked_cones"
   output_topic:     "/cones_colored"
 
-  # Front / Left / Right image + camera info topics
+  # Front / Left / Right image topics (Gazebo or real hardware remap here)
   rgb_topic_front:  "/csi_front/image_raw"
   rgb_topic_left:   "/csi_left/image_raw"
   rgb_topic_right:  "/csi_right/image_raw"
 
+  # Corresponding CameraInfo topics (intrinsics)
   cam_info_front:   "/csi_front/camera_info"
   cam_info_left:    "/csi_left/camera_info"
   cam_info_right:   "/csi_right/camera_info"
 
-  # Camera frames (must exist in TF)
+  # Camera optical frames; TF must provide lidar_frame -> these
   camera_frame_front: "csi_front_optical"
   camera_frame_left:  "csi_left_optical"
   camera_frame_right: "csi_right_optical"
 
-  # ROI sizing and timing
+  # ROI sizing and freshness gating
   max_image_age_s:  0.25
   cone_width_m:     0.25
+  roi_scale:        0.60
   min_roi_px:       16
   max_roi_px:       96
   min_pixels_for_conf: 120
-  conf_floor:       0.10
+  conf_floor:       0.05
+  roi_scale:        0.60
+  min_Z:            0.05
+  max_Z:            30.0
 
-  # HSV thresholds (tune if needed)
-  hsv_blue_low:     [100, 150, 50]
-  hsv_blue_high:    [130, 255, 255]
-  hsv_yellow_low:   [18, 80, 80]
-  hsv_yellow_high:  [35, 255, 255]
+  # HSV thresholds (seed values; tune for your lighting)
+  # hsv_blue_low:     [100, 150, 50]
+  # hsv_blue_high:    [130, 255, 255]
+  # hsv_yellow_low:   [18, 80, 80]
+  # hsv_yellow_high:  [35, 255, 255]
+  hsv_blue_low:     [90,  70,  40]
+  hsv_blue_high:    [140, 255, 255]
+  hsv_yellow_low:   [15,  60,  60]
+  hsv_yellow_high:  [45,  255, 255]
+  hsv_open_ksize:   3 
+  prefer_center_weight: 0.15
+
+  tf_use_latest: true
+  lidar_frame_override: ""
 
   # Debug overlays
   debug:            1

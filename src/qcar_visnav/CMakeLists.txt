@@ -184,6 +184,19 @@ target_link_libraries(fastslam2_viz_node
   ${catkin_LIBRARIES}
 )
 
+# -------------- camera calibration node (for testing) --------------
+## Tools: offline calibration CLI
+add_executable(calib_tool
+  tools/calib_tool.cpp
+  tools/camera.cpp
+)
+target_include_directories(calib_tool PRIVATE
+  ${OpenCV_INCLUDE_DIRS}
+  tools
+)
+target_link_libraries(calib_tool
+  ${OpenCV_LIBRARIES}
+)
 
 ## =========================================================
 ## Installation

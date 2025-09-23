@@ -1,0 +1,8 @@
+chessboard_data:
+  chessboard:
+    grid_width:  9        # inner corners across (columns)
+    grid_height: 6        # inner corners down (rows)
+    square_size: 0.0245   # metres (change to your board)
+  # Regex applied to filenames under this directory (recursively).
+  # Put your images/videos next to this config, or adjust path when running the tool.
+  file_regex: ".*\\.(png|jpg|jpeg|bmp|mp4|avi|mov)"

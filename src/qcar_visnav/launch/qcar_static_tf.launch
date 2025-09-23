@@ -1,0 +1,24 @@
+<launch>
+  <!-- base -> lidar (copy from your URDF numbers; these match your Gazebo xacro) -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="tf_base_to_lidar"
+        args="-0.01227 -0.00045 0.16152 0 0 0 base_footprint lidar" />
+
+  <!-- base -> CSI FRONT (pose from qcar_model.xacro) -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="tf_base_to_csi_front"
+        args="0.19236 -0.000475 0.093029 0 0 0 base_footprint camera_csi_front"/>
+  <!-- camera -> optical (REP 105) -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="tf_csi_front_to_optical"
+        args="0 0 0 -1.57079632679 0 -1.57079632679 camera_csi_front csi_front_optical"/>
+
+  <!-- LEFT -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="tf_base_to_csi_left"
+        args="0.12784 0.052497 0.093029 0 0 1.5708 base_footprint camera_csi_left"/>
+  <node pkg="tf2_ros" type="static_transform_publisher" name="tf_csi_left_to_optical"
+        args="0 0 0 -1.57079632679 0 -1.57079632679 camera_csi_left csi_left_optical"/>
+
+  <!-- RIGHT -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="tf_base_to_csi_right"
+        args="0.12887 -0.06755 0.093029 0 0 -1.5708 base_footprint camera_csi_right"/>
+  <node pkg="tf2_ros" type="static_transform_publisher" name="tf_csi_right_to_optical"
+        args="0 0 0 -1.57079632679 0 -1.57079632679 camera_csi_right csi_right_optical"/>
+</launch>
