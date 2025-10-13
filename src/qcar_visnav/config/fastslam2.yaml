@@ -32,31 +32,31 @@ resample_neff_ratio: 0.5
 
 # Process noise
 motion_noise:
-  sigma_x:   0.04
-  sigma_y:   0.04
-  sigma_yaw: 0.01
+  sigma_x:   0.06
+  sigma_y:   0.06
+  sigma_yaw: 0.02
 
 # Data association
 association:
-  mode: "id"          # "id" | "nn_rb"
+  mode: "nn_rb"          # "id" | "nn_rb"
   chi2_gate_rb: 3.91     # 2.3 (90%) | 3.91 (95%) | 5.99 (99%) | 9.21 (99.9%)
 
 # Landmark behavior
 landmarks:
-  init_var: 0.30
+  init_var: 0.02
   confirm_hits: 3
-  lock_hits: 15
-  lock_cov_trace: 0.001
+  lock_hits: 20
+  lock_cov_trace: 0.0005
 
 pose_proposal:
   enable: true
-  Kmax: 6
+  Kmax: 12
   eps_fd: 1.0e-4
-  clamp_dx: 0.25
-  clamp_dy: 0.25
-  clamp_dyaw: 0.05    # radians
+  clamp_dx: 0.5
+  clamp_dy: 0.5
+  clamp_dyaw: 0.1    # radians
   min_dt: 0.02
-  prior_scale: 1.0
+  prior_scale: 10.0
 
 
 # --- Visualization (minimal & fast — single combined topic with namespaces) ---
