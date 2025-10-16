@@ -955,4 +955,16 @@ void FastSLAM2::publishCoreOutputs(const ros::Time& t,
   tf2::Quaternion q_mean; q_mean.setRPY(0,0,mean_yaw_);
   odom_mean.pose.pose.orientation = tf2::toMsg(q_mean);
   pub_slam_odom_mean_.publish(odom_mean);
+
+  // Debug: print persistent landmarks from best particle
+  {
+    const auto& bp = bestP; // bestP is defined above in this function
+    ROS_INFO("[FastSLAM2] best_particle:%d landmarks=%zu", best_idx_, bp.map.size());
+    for (const auto& lm : bp.map) {
+      const double trace = lm.Sigma.trace();
+      ROS_INFO("[FastSLAM2] LM[id=%d] x=%.3f y=%.3f trace=%.6f hits=%d conf=%d locked=%d",
+               lm.id, lm.mu.x(), lm.mu.y(), trace,
+               lm.hits, lm.confirmed ? 1 : 0, lm.locked ? 1 : 0);
+    }
+  }
 }
