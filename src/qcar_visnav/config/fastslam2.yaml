@@ -9,7 +9,7 @@ frames:
   lidar_frame: "lidar"
 
 odometry:
-  use_ekf: true
+  use_ekf: false
   truth_topic: "/odom"
   ekf_topic: "/qcar/ekf/odom"
 
